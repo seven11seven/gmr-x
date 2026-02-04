@@ -8,6 +8,20 @@ from rich import print
 from tqdm import tqdm
 import os
 import numpy as np
+from pynput import keyboard
+
+
+key_pressed = {"p": False}
+
+def on_press(key):
+    try:
+        if key.char == "p":
+            key_pressed["p"] = True
+    except AttributeError:
+        pass
+
+listener = keyboard.Listener(on_press=on_press)
+listener.start()
 
 if __name__ == "__main__":
     
@@ -23,7 +37,7 @@ if __name__ == "__main__":
     
     parser.add_argument(
         "--format",
-        choices=["lafan1", "nokov"],
+        choices=["lafan1", "nokov", "fz", "xsens"],
         default="lafan1",
     )
     
@@ -36,8 +50,8 @@ if __name__ == "__main__":
     
     parser.add_argument(
         "--robot",
-        choices=["unitree_g1", "unitree_g1_with_hands", "booster_t1", "stanford_toddy", "fourier_n1", "engineai_pm01", "pal_talos"],
-        default="unitree_g1",
+        choices=["unitree_g1", "booster_t1", "stanford_toddy", "fourier_n1", "engineai_pm01", "D11_X", "D12", "dz_robot"],
+        default="D12",
     )
     
     
@@ -67,7 +81,7 @@ if __name__ == "__main__":
     
     parser.add_argument(
         "--motion_fps",
-        default=30,
+        default=60,
         type=int,
     )
     
@@ -81,7 +95,7 @@ if __name__ == "__main__":
 
     
     # Load SMPLX trajectory
-    lafan1_data_frames, actual_human_height = load_bvh_file(args.bvh_file, format=args.format)
+    lafan1_data_frames, actual_human_height = load_bvh_file(args.bvh_file)
     
     
     # Initialize the retargeting system
@@ -135,8 +149,8 @@ if __name__ == "__main__":
         smplx_data = lafan1_data_frames[i]
 
         # retarget
-        qpos = retargeter.retarget(smplx_data)
-        
+        qpos = retargeter.retarget(smplx_data, offset_to_ground=True)
+
 
         # visualize
         robot_motion_viewer.step(
@@ -148,6 +162,12 @@ if __name__ == "__main__":
             follow_camera=True,
             # human_pos_offset=np.array([0.0, 0.0, 0.0])
         )
+        
+        if key_pressed["p"]:
+            key_pressed["p"] = False
+            import ipdb; ipdb.set_trace()
+        # import ipdb; ipdb.set_trace()
+        print("current frame: ", i)
 
         if args.loop:
             i = (i + 1) % len(lafan1_data_frames)
@@ -158,6 +178,9 @@ if __name__ == "__main__":
    
         
         if args.save_path is not None:
+            xyzw = qpos[3:7].copy()
+            wxyz = xyzw[[1,2,3,0]].copy()
+            qpos[3:7] = wxyz
             qpos_list.append(qpos)
     
     if args.save_path is not None:
@@ -169,6 +192,15 @@ if __name__ == "__main__":
         local_body_pos = None
         body_names = None
         
+        csv_qpos_origin = np.array(qpos_list, dtype=np.float32)
+        print("csv_qpos_origin shape: ", csv_qpos_origin.shape)
+        csv_qpos_front = csv_qpos_origin[5,:].reshape(1, -1).repeat(120, axis=0)
+        csv_qpos_back = csv_qpos_origin[-1,:].reshape(1, -1).repeat(120, axis=0)
+        csv_qpos = np.concatenate([csv_qpos_front, csv_qpos_origin[5:,:], csv_qpos_back], axis=0)
+        print("csv_qpos shape: ", csv_qpos.shape)
+        file_name = "./datas/target/" + args.bvh_file.split("/")[-1].split(".")[0] + "_" + args.robot + ".csv"
+        np.savetxt(file_name, csv_qpos, delimiter=",")
+        
         motion_data = {
             "fps": motion_fps,
             "root_pos": root_pos,
@@ -177,8 +209,8 @@ if __name__ == "__main__":
             "local_body_pos": local_body_pos,
             "link_body_list": body_names,
         }
-        with open(args.save_path, "wb") as f:
-            pickle.dump(motion_data, f)
+        # with open(args.save_path, "wb") as f:
+        #     pickle.dump(motion_data, f)
         print(f"Saved to {args.save_path}")
 
     # Close progress bar

@@ -22,6 +22,9 @@ ROBOT_XML_DICT = {
     "pnd_adam_lite": ASSET_ROOT / "pnd_adam_lite" / "scene.xml",
     "tienkung": ASSET_ROOT / "tienkung" / "mjcf" / "tienkung.xml",
     "pal_talos": ASSET_ROOT / "pal_talos" / "talos.xml",
+    "D11_X": ASSET_ROOT / "D11_X" / "D11_X_3ARM.xml",
+    "D12": ASSET_ROOT / "D12_22dof" / "d12_service_edition.xml",
+    "dz_robot": ASSET_ROOT / "dz_robot" / "DZ1_urdf_v1.xml",
 }
 
 IK_CONFIG_DICT = {
@@ -43,6 +46,8 @@ IK_CONFIG_DICT = {
         "booster_k1": IK_CONFIG_ROOT / "smplx_to_k1.json",
         "pnd_adam_lite": IK_CONFIG_ROOT / "smplx_to_adam.json",
         "tienkung": IK_CONFIG_ROOT / "smplx_to_tienkung.json",
+        "D11_X": IK_CONFIG_ROOT / "smplx_to_D11X.json",
+        "D12": IK_CONFIG_ROOT / "smplx_to_D12.json",
     },
     "bvh_lafan1":{
         "unitree_g1": IK_CONFIG_ROOT / "bvh_lafan1_to_g1.json",
@@ -52,9 +57,22 @@ IK_CONFIG_DICT = {
         "stanford_toddy": IK_CONFIG_ROOT / "bvh_lafan1_to_toddy.json",
         "engineai_pm01": IK_CONFIG_ROOT / "bvh_lafan1_to_pm01.json",
         "pal_talos": IK_CONFIG_ROOT / "bvh_to_talos.json",
+        "D11_X": IK_CONFIG_ROOT / "bvh_to_D11X.json",
+        "D12": IK_CONFIG_ROOT / "bvh_to_D12.json",
+        "dz_robot": IK_CONFIG_ROOT / "bvh_to_dz_robot.json",
     },
     "bvh_nokov":{
         "unitree_g1": IK_CONFIG_ROOT / "bvh_nokov_to_g1.json",
+    },
+    "bvh_fz":{
+        "unitree_g1": IK_CONFIG_ROOT / "fz_bvh_to_g1.json",
+        "D12": IK_CONFIG_ROOT / "fz_bvh_to_D12.json",
+        "dz_robot": IK_CONFIG_ROOT / "fz_bvh_to_dzrobot.json"
+    },
+    "bvh_xsens":{
+        "unitree_g1": IK_CONFIG_ROOT / "xsens_bvh_to_g1.json",
+        "D12": IK_CONFIG_ROOT / "xsens_bvh_to_D12.json",
+        "dz_robot": IK_CONFIG_ROOT / "xsens_bvh_to_dzrobot.json"
     },
     "fbx":{
         "unitree_g1": IK_CONFIG_ROOT / "fbx_to_g1.json",
@@ -84,6 +102,9 @@ ROBOT_BASE_DICT = {
     "pnd_adam_lite": "pelvis",
     "tienkung": "Base_link",
     "pal_talos": "base_link",
+    "D11_X": "base_link",
+    "D12": "base_link",
+    "dz_robot": "base_link",
 }
 
 VIEWER_CAM_DISTANCE_DICT = {
@@ -104,4 +125,7 @@ VIEWER_CAM_DISTANCE_DICT = {
     "pnd_adam_lite": 3.0,
     "tienkung": 3.0,
     "pal_talos": 3.0,
+    "D11_X": 3.0,
+    "D12": 3.0,
+    "dz_robot": 3.0,
 }

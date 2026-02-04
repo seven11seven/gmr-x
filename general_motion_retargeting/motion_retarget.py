@@ -69,7 +69,7 @@ class GeneralMotionRetargeting:
         for key in ik_config["human_scale_table"].keys():
             ik_config["human_scale_table"][key] = ik_config["human_scale_table"][key] * ratio
     
-
+        # self.robot_default_pos = np.array(ik_config["default_pos"])
         # used for retargeting
         self.ik_match_table1 = ik_config["ik_match_table1"]
         self.ik_match_table2 = ik_config["ik_match_table2"]
@@ -79,8 +79,9 @@ class GeneralMotionRetargeting:
         self.use_ik_match_table2 = ik_config["use_ik_match_table2"]
         self.human_scale_table = ik_config["human_scale_table"]
         self.ground = ik_config["ground_height"] * np.array([0, 0, 1])
+        # self.collision_pairs = ik_config["collision_pairs"]
 
-        self.max_iter = 10
+        self.max_iter = 50
 
         self.solver = solver
         self.damping = damping
@@ -94,10 +95,12 @@ class GeneralMotionRetargeting:
 
         self.task_errors1 = {}
         self.task_errors2 = {}
+        
+        self.limit = []
 
         self.ik_limits = [mink.ConfigurationLimit(self.model)]
         if use_velocity_limit:
-            VELOCITY_LIMITS = {k: 3*np.pi for k in self.robot_motor_names.keys()}
+            VELOCITY_LIMITS = {k: 4*np.pi for k in self.robot_motor_names.keys()}
             self.ik_limits.append(mink.VelocityLimit(self.model, VELOCITY_LIMITS)) 
             
         self.setup_retarget_configuration()
@@ -145,7 +148,34 @@ class GeneralMotionRetargeting:
                 )
                 self.tasks2.append(task)
                 self.task_errors2[task] = []
-
+        
+        self.posture_task = mink.PostureTask(self.model, cost=10.0)
+        self.tasks2.append(self.posture_task)
+        self.tasks1.append(self.posture_task)
+        
+        self.damping_task = mink.DampingTask(self.model, cost=1.0)
+        self.tasks1.append(self.damping_task)
+        self.tasks2.append(self.damping_task)
+        
+        # self.limit.append(mink.ConfigurationLimit(self.model))
+        
+        collision_pairs = [
+            ([
+            #   "left_hip_pitch_link_collision", "right_hip_pitch_link_collision",
+            #   "left_knee_pitch_link_collision", "right_knee_pitch_link_collision",
+            #   "left_ankle_pitch_link_collision", "right_ankle_pitch_link_collision",
+              "left_ankle_roll_link_collision", "right_ankle_roll_link_collision",
+            #   "base_link_collision"
+              ], ["ground"]),
+        ]
+        collision_avoidance_limit = mink.CollisionAvoidanceLimit(
+            model=self.model,
+            geom_pairs=collision_pairs,  # type: ignore
+            minimum_distance_from_collisions=0.005,
+            collision_detection_distance=0.01,
+        )
+        self.ik_limits.append(collision_avoidance_limit)
+        
   
     def update_targets(self, human_data, offset_to_ground=False):
         # scale human data in local frame
@@ -162,12 +192,14 @@ class GeneralMotionRetargeting:
                 task = self.human_body_to_task1[body_name]
                 pos, rot = human_data[body_name]
                 task.set_target(mink.SE3.from_rotation_and_translation(mink.SO3(rot), pos))
+            self.posture_task.set_target_from_configuration(self.configuration)
         
         if self.use_ik_match_table2:
             for body_name in self.human_body_to_task2.keys():
                 task = self.human_body_to_task2[body_name]
                 pos, rot = human_data[body_name]
                 task.set_target(mink.SE3.from_rotation_and_translation(mink.SO3(rot), pos))
+            self.posture_task.set_target_from_configuration(self.configuration)
             
             
     def retarget(self, human_data, offset_to_ground=False):
@@ -247,6 +279,7 @@ class GeneralMotionRetargeting:
         
         # scale root
         scaled_root_pos = human_scale_table[human_root_name] * root_pos
+        # scaled_root_pos[2] = scaled_root_pos[2] - 0.24
         
         # scale other body parts in local frame
         for body_name in human_data.keys():
@@ -286,7 +319,7 @@ class GeneralMotionRetargeting:
     def offset_human_data_to_ground(self, human_data):
         """find the lowest point of the human data and offset the human data to the ground"""
         offset_human_data = {}
-        ground_offset = 0.1
+        ground_offset = -0.035
         lowest_pos = np.inf
 
         for body_name in human_data.keys():

@@ -33,8 +33,8 @@ if __name__ == "__main__":
         choices=["unitree_g1", "unitree_g1_with_hands", "unitree_h1", "unitree_h1_2",
                  "booster_t1", "booster_t1_29dof","stanford_toddy", "fourier_n1", 
                 "engineai_pm01", "kuavo_s45", "hightorque_hi", "galaxea_r1pro", "berkeley_humanoid_lite", "booster_k1",
-                "pnd_adam_lite", "openloong", "tienkung"],
-        default="unitree_g1",
+                "pnd_adam_lite", "openloong", "tienkung", "D11_X", "D12"],
+        default="D12",
     )
     
     parser.add_argument(
@@ -130,8 +130,8 @@ if __name__ == "__main__":
         smplx_data = smplx_data_frames[i]
 
         # retarget
-        qpos = retarget.retarget(smplx_data)
-
+        qpos = retarget.retarget(smplx_data,offset_to_ground=True)
+        
         # visualize
         robot_motion_viewer.step(
             root_pos=qpos[:3],
@@ -144,6 +144,10 @@ if __name__ == "__main__":
             rate_limit=args.rate_limit,
         )
         if args.save_path is not None:
+            # qpos_list.append(qpos)
+            xyzw = qpos[3:7].copy()
+            wxyz = xyzw[[1,2,3,0]].copy()
+            qpos[3:7] = wxyz
             qpos_list.append(qpos)
             
     if args.save_path is not None:
@@ -155,6 +159,10 @@ if __name__ == "__main__":
         local_body_pos = None
         body_names = None
         
+        csv_qpos = np.array(qpos_list, dtype=np.float32)
+        file_name = "./datas/target/" + args.smplx_file.split("/")[-1].split(".")[0] + "_" + args.robot + ".csv"
+        np.savetxt(file_name, csv_qpos, delimiter=",")
+        
         motion_data = {
             "fps": aligned_fps,
             "root_pos": root_pos,
@@ -163,8 +171,8 @@ if __name__ == "__main__":
             "local_body_pos": local_body_pos,
             "link_body_list": body_names,
         }
-        with open(args.save_path, "wb") as f:
-            pickle.dump(motion_data, f)
+        # with open(args.save_path, "wb") as f:
+        #     pickle.dump(motion_data, f)
         print(f"Saved to {args.save_path}")
             
       
