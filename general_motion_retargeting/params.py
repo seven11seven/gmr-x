@@ -25,6 +25,7 @@ ROBOT_XML_DICT = {
     "D11_X": ASSET_ROOT / "D11_X" / "D11_X_3ARM.xml",
     "D12": ASSET_ROOT / "D12_22dof" / "d12_service_edition.xml",
     "dz_robot": ASSET_ROOT / "dz_robot" / "DZ1_urdf_v1.xml",
+    "d20_v2": ASSET_ROOT / "D20_v2" / "D20.xml",
 }
 
 IK_CONFIG_DICT = {
@@ -74,12 +75,24 @@ IK_CONFIG_DICT = {
         "D12": IK_CONFIG_ROOT / "xsens_bvh_to_D12.json",
         "dz_robot": IK_CONFIG_ROOT / "xsens_bvh_to_dzrobot.json"
     },
+    "xsens_realtime":{
+        "unitree_g1": IK_CONFIG_ROOT / "xsens_realtime_to_g1.json",
+        "d20_v2": IK_CONFIG_ROOT / "xsens_realtime_to_d20_v2.json",
+    },
     "fbx":{
         "unitree_g1": IK_CONFIG_ROOT / "fbx_to_g1.json",
         "unitree_g1_with_hands": IK_CONFIG_ROOT / "fbx_to_g1.json",
     },
     "fbx_offline":{
         "unitree_g1": IK_CONFIG_ROOT / "fbx_offline_to_g1.json",
+    },
+    
+    "xrobot":{
+        "unitree_g1": IK_CONFIG_ROOT / "xrobot_to_g1.json",
+        "d20_v2": IK_CONFIG_ROOT / "xrobot_to_d20_v2.json",
+    },
+    "xsens_mvn": {
+        "unitree_g1": IK_CONFIG_ROOT / "xsens_mvn_to_g1.json",
     },
 }
 
@@ -105,6 +118,7 @@ ROBOT_BASE_DICT = {
     "D11_X": "base_link",
     "D12": "base_link",
     "dz_robot": "base_link",
+    "d20_v2": "base_link",
 }
 
 VIEWER_CAM_DISTANCE_DICT = {
@@ -128,4 +142,5 @@ VIEWER_CAM_DISTANCE_DICT = {
     "D11_X": 3.0,
     "D12": 3.0,
     "dz_robot": 3.0,
+    "d20_v2": 3.0,
 }

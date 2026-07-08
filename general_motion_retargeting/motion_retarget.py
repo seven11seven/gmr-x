@@ -65,9 +65,19 @@ class GeneralMotionRetargeting:
         else:
             ratio = 1.0
             
-        # adjust the human scale table
-        for key in ik_config["human_scale_table"].keys():
-            ik_config["human_scale_table"][key] = ik_config["human_scale_table"][key] * ratio
+        # adjust the human scale tables
+        if "human_scale_table_vertical" in ik_config:
+            self.human_scale_table_vertical = {
+                k: v * ratio for k, v in ik_config["human_scale_table_vertical"].items()
+            }
+            self.human_scale_table_horizontal = {
+                k: v * ratio for k, v in ik_config["human_scale_table_horizontal"].items()
+            }
+        else:
+            # backward compat: single human_scale_table → same scale for both directions
+            scaled = {k: v * ratio for k, v in ik_config["human_scale_table"].items()}
+            self.human_scale_table_vertical = scaled
+            self.human_scale_table_horizontal = scaled
     
         # self.robot_default_pos = np.array(ik_config["default_pos"])
         # used for retargeting
@@ -77,15 +87,19 @@ class GeneralMotionRetargeting:
         self.robot_root_name = ik_config["robot_root_name"]
         self.use_ik_match_table1 = ik_config["use_ik_match_table1"]
         self.use_ik_match_table2 = ik_config["use_ik_match_table2"]
-        self.human_scale_table = ik_config["human_scale_table"]
         self.ground = ik_config["ground_height"] * np.array([0, 0, 1])
         # self.collision_pairs = ik_config["collision_pairs"]
 
-        self.max_iter = 50
+        self.max_iter = 10
 
         self.solver = solver
         self.damping = damping
 
+        self.frame_to_task1 = {}
+        self.frame_to_task2 = {}
+        self.frame_to_bodies1 = {}
+        self.frame_to_bodies2 = {}
+        # backward-compatible flat dicts
         self.human_body_to_task1 = {}
         self.human_body_to_task2 = {}
         self.pos_offsets1 = {}
@@ -109,78 +123,103 @@ class GeneralMotionRetargeting:
 
     def setup_retarget_configuration(self):
         self.configuration = mink.Configuration(self.model)
-    
+
         self.tasks1 = []
         self.tasks2 = []
-        
-        for frame_name, entry in self.ik_match_table1.items():
-            body_name, pos_weight, rot_weight, pos_offset, rot_offset = entry
-            if pos_weight != 0 or rot_weight != 0:
-                task = mink.FrameTask(
-                    frame_name=frame_name,
-                    frame_type="body",
-                    position_cost=pos_weight,
-                    orientation_cost=rot_weight,
-                    lm_damping=1,
-                )
-                self.human_body_to_task1[body_name] = task
-                self.pos_offsets1[body_name] = np.array(pos_offset) - self.ground
-                self.rot_offsets1[body_name] = R.from_quat(
-                    rot_offset, scalar_first=True
-                )
-                self.tasks1.append(task)
-                self.task_errors1[task] = []
-        
-        for frame_name, entry in self.ik_match_table2.items():
-            body_name, pos_weight, rot_weight, pos_offset, rot_offset = entry
-            if pos_weight != 0 or rot_weight != 0:
-                task = mink.FrameTask(
-                    frame_name=frame_name,
-                    frame_type="body",
-                    position_cost=pos_weight,
-                    orientation_cost=rot_weight,
-                    lm_damping=1,
-                )
-                self.human_body_to_task2[body_name] = task
-                self.pos_offsets2[body_name] = np.array(pos_offset) - self.ground
-                self.rot_offsets2[body_name] = R.from_quat(
-                    rot_offset, scalar_first=True
-                )
-                self.tasks2.append(task)
-                self.task_errors2[task] = []
-        
+
+        self._build_frame_mappings(
+            self.ik_match_table1,
+            self.frame_to_task1,
+            self.frame_to_bodies1,
+            self.tasks1,
+            self.task_errors1,
+            self.human_body_to_task1,
+            self.pos_offsets1,
+            self.rot_offsets1,
+        )
+
+        self._build_frame_mappings(
+            self.ik_match_table2,
+            self.frame_to_task2,
+            self.frame_to_bodies2,
+            self.tasks2,
+            self.task_errors2,
+            self.human_body_to_task2,
+            self.pos_offsets2,
+            self.rot_offsets2,
+        )
+
         self.posture_task = mink.PostureTask(self.model, cost=10.0)
         self.tasks2.append(self.posture_task)
         self.tasks1.append(self.posture_task)
-        
+
         self.damping_task = mink.DampingTask(self.model, cost=1.0)
         self.tasks1.append(self.damping_task)
         self.tasks2.append(self.damping_task)
+
+    def _build_frame_mappings(
+        self, ik_match_table, frame_to_task, frame_to_bodies,
+        tasks, task_errors, body_to_task, pos_offsets, rot_offsets,
+    ):
+        for frame_name, entry in ik_match_table.items():
+            # Normalize: single entry → list of entries for uniform processing
+            if isinstance(entry[0], list):
+                entries = entry
+            else:
+                entries = [entry]
+
+            first = entries[0]
+            _, pos_weight, rot_weight, _, _ = first
+
+            if pos_weight != 0 or rot_weight != 0:
+                task = mink.FrameTask(
+                    frame_name=frame_name,
+                    frame_type="body",
+                    position_cost=pos_weight,
+                    orientation_cost=rot_weight,
+                    lm_damping=1,
+                )
+                frame_to_task[frame_name] = task
+                tasks.append(task)
+                task_errors[task] = []
+
+                body_entries = []
+                for body_name, _pw, _rw, pos_offset, rot_offset in entries:
+                    po_np = np.array(pos_offset) - self.ground
+                    ro_R = R.from_quat(rot_offset, scalar_first=True)
+                    body_entries.append((body_name, po_np, ro_R))
+                    # backward-compatible flat dicts
+                    body_to_task[body_name] = task
+                    pos_offsets[body_name] = po_np
+                    rot_offsets[body_name] = ro_R
+                frame_to_bodies[frame_name] = body_entries
         
         # self.limit.append(mink.ConfigurationLimit(self.model))
         
-        collision_pairs = [
-            ([
-            #   "left_hip_pitch_link_collision", "right_hip_pitch_link_collision",
-            #   "left_knee_pitch_link_collision", "right_knee_pitch_link_collision",
-            #   "left_ankle_pitch_link_collision", "right_ankle_pitch_link_collision",
-              "left_ankle_roll_link_collision", "right_ankle_roll_link_collision",
-            #   "base_link_collision"
-              ], ["ground"]),
-        ]
-        collision_avoidance_limit = mink.CollisionAvoidanceLimit(
-            model=self.model,
-            geom_pairs=collision_pairs,  # type: ignore
-            minimum_distance_from_collisions=0.005,
-            collision_detection_distance=0.01,
-        )
-        self.ik_limits.append(collision_avoidance_limit)
+        # collision_pairs = [
+        #     ([
+        #     #   "left_hip_pitch_link_collision", "right_hip_pitch_link_collision",
+        #     #   "left_knee_pitch_link_collision", "right_knee_pitch_link_collision",
+        #     #   "left_ankle_pitch_link_collision", "right_ankle_pitch_link_collision",
+        #       "left_ankle_roll_link_collision", "right_ankle_roll_link_collision",
+        #     #   "base_link_collision"
+        #       ], ["ground"]),
+        # ]
+        # collision_avoidance_limit = mink.CollisionAvoidanceLimit(
+        #     model=self.model,
+        #     geom_pairs=collision_pairs,  # type: ignore
+        #     minimum_distance_from_collisions=0.005,
+        #     collision_detection_distance=0.01,
+        # )
+        # self.ik_limits.append(collision_avoidance_limit)
         
   
     def update_targets(self, human_data, offset_to_ground=False):
         # scale human data in local frame
         human_data = self.to_numpy(human_data)
-        human_data = self.scale_human_data(human_data, self.human_root_name, self.human_scale_table)
+        human_data = self.scale_human_data(human_data, self.human_root_name,
+                                            self.human_scale_table_vertical,
+                                            self.human_scale_table_horizontal)
         human_data = self.offset_human_data(human_data, self.pos_offsets1, self.rot_offsets1)
         human_data = self.apply_ground_offset(human_data)
         if offset_to_ground:
@@ -188,17 +227,15 @@ class GeneralMotionRetargeting:
         self.scaled_human_data = human_data
 
         if self.use_ik_match_table1:
-            for body_name in self.human_body_to_task1.keys():
-                task = self.human_body_to_task1[body_name]
-                pos, rot = human_data[body_name]
-                task.set_target(mink.SE3.from_rotation_and_translation(mink.SO3(rot), pos))
+            for frame_name, body_entries in self.frame_to_bodies1.items():
+                task = self.frame_to_task1[frame_name]
+                self._set_combined_target(task, body_entries, human_data)
             self.posture_task.set_target_from_configuration(self.configuration)
-        
+
         if self.use_ik_match_table2:
-            for body_name in self.human_body_to_task2.keys():
-                task = self.human_body_to_task2[body_name]
-                pos, rot = human_data[body_name]
-                task.set_target(mink.SE3.from_rotation_and_translation(mink.SO3(rot), pos))
+            for frame_name, body_entries in self.frame_to_bodies2.items():
+                task = self.frame_to_task2[frame_name]
+                self._set_combined_target(task, body_entries, human_data)
             self.posture_task.set_target_from_configuration(self.configuration)
             
             
@@ -272,26 +309,28 @@ class GeneralMotionRetargeting:
         return human_data
 
 
-    def scale_human_data(self, human_data, human_root_name, human_scale_table):
-        
+    def scale_human_data(self, human_data, human_root_name, scale_table_vertical, scale_table_horizontal):
         human_data_local = {}
         root_pos, root_quat = human_data[human_root_name]
-        
-        # scale root
-        scaled_root_pos = human_scale_table[human_root_name] * root_pos
-        # scaled_root_pos[2] = scaled_root_pos[2] - 0.24
-        
-        # scale other body parts in local frame
+
+        # scale root: vertical (Z) and horizontal (X,Y) separately
+        sv = scale_table_vertical[human_root_name]
+        sh = scale_table_horizontal[human_root_name]
+        scaled_root_pos = root_pos * np.array([sh, sh, sv])
+
+        # scale other body parts in root-relative local frame, per-axis
         for body_name in human_data.keys():
-            if body_name not in human_scale_table:
+            if body_name not in scale_table_vertical:
                 continue
             if body_name == human_root_name:
                 continue
-            else:
-                # transform to local frame (only position)
-                human_data_local[body_name] = (human_data[body_name][0] - root_pos) * human_scale_table[body_name]
-            
-        # transform the human data back to the global frame
+            sv_b = scale_table_vertical[body_name]
+            sh_b = scale_table_horizontal[body_name]
+            local_pos = human_data[body_name][0] - root_pos
+            scaled_local = local_pos * np.array([sh_b, sh_b, sv_b])
+            human_data_local[body_name] = scaled_local
+
+        # transform back to global frame
         human_data_global = {human_root_name: (scaled_root_pos, root_quat)}
         for body_name in human_data_local.keys():
             human_data_global[body_name] = (human_data_local[body_name] + scaled_root_pos, human_data[body_name][1])
@@ -316,10 +355,36 @@ class GeneralMotionRetargeting:
            
         return offset_human_data
             
+    def _set_combined_target(self, task, body_entries, human_data):
+        positions = []
+        quaternions = []
+        for body_name, *_ in body_entries:
+            pos, quat = human_data[body_name]
+            positions.append(pos)
+            quaternions.append(quat)
+
+        if len(body_entries) == 1:
+            task.set_target(mink.SE3.from_rotation_and_translation(
+                mink.SO3(quaternions[0]), positions[0]))
+        else:
+            avg_pos = np.mean(positions, axis=0)
+            avg_quat = self._average_quaternions(quaternions)
+            task.set_target(mink.SE3.from_rotation_and_translation(mink.SO3(avg_quat), avg_pos))
+
+    @staticmethod
+    def _average_quaternions(quats):
+        q = np.array(quats)
+        Q = q.T @ q
+        _, v = np.linalg.eigh(Q)
+        avg = v[:, -1]
+        if avg[0] < 0:
+            avg = -avg
+        return avg
+
     def offset_human_data_to_ground(self, human_data):
         """find the lowest point of the human data and offset the human data to the ground"""
         offset_human_data = {}
-        ground_offset = -0.035
+        ground_offset = 0.05
         lowest_pos = np.inf
 
         for body_name in human_data.keys():
@@ -342,5 +407,5 @@ class GeneralMotionRetargeting:
     def apply_ground_offset(self, human_data):
         for body_name in human_data.keys():
             pos, quat = human_data[body_name]
-            human_data[body_name][0] = pos - np.array([0, 0, self.ground_offset])
+            human_data[body_name] = (pos - np.array([0, 0, self.ground_offset]), quat)
         return human_data

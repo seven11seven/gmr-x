@@ -72,6 +72,12 @@ if __name__ == "__main__":
         action="store_true",
         default=False,
     )
+    
+    parser.add_argument(
+        "--downsample",
+        action="store_true",
+        default=False,
+    )
 
     parser.add_argument(
         "--save_path",
@@ -197,6 +203,14 @@ if __name__ == "__main__":
         csv_qpos_back = csv_qpos_origin[-1,:].reshape(1, -1).repeat(120, axis=0)
         csv_qpos = np.concatenate([csv_qpos_front, csv_qpos_origin[5:,:], csv_qpos_back], axis=0)
         print("csv_qpos shape: ", csv_qpos.shape)
+        if args.downsample:
+            # downsample to 30 fps
+            downsample_factor = motion_fps / 30.0
+            indices = np.arange(0, csv_qpos.shape[0], downsample_factor).astype(int)
+            old_length = csv_qpos.shape[0]
+            csv_qpos = csv_qpos[indices]
+            print(f"Downsampled from {old_length} to {csv_qpos.shape[0]} frames")
+        
         file_name = "./datas/target/" + args.bvh_file.split("/")[-1].split(".")[0] + "_" + args.robot + ".csv"
         np.savetxt(file_name, csv_qpos, delimiter=",")
         

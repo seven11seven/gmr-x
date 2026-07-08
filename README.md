@@ -187,7 +187,7 @@ Starting from its release, **GMR** has been massively used by the community. See
 First create your conda environment:
 
 ```bash
-conda create -n gmr python=3.10 -y
+conda create -n gmr python=3.10 -y (pip install -i https://pypi.tuna.tsinghua.edu.cn/simple)
 conda activate gmr
 ```
 
@@ -195,6 +195,10 @@ Then, install GMR:
 
 ```bash
 pip install -e .
+```
+```bash
+pip install pyyaml
+pip install sysv_ipc
 ```
 
 After installing SMPLX, change `ext` in `smplx/body_models.py` from `npz` to `pkl` if you are using SMPL-X pkl files.
@@ -429,3 +433,13 @@ The original robot models can be found at the following locations:
 * [PAL Robotics' Talos](https://github.com/google-deepmind/mujoco_menagerie): [Link to file](https://github.com/google-deepmind/mujoco_menagerie/tree/main/pal_talos)
 * [Toddlerbot](https://github.com/hshi74/toddlerbot): [Link to file](https://github.com/hshi74/toddlerbot/tree/main/toddlerbot/descriptions/toddlerbot_active)
 * [Unitree G1](https://github.com/unitreerobotics/unitree_ros): [Link to file](https://github.com/unitreerobotics/unitree_ros/tree/master/robots/g1_description)
+
+
+pelvis (0)  ── 根节点
+├── L5 (1) → L3 (2) → T12 (3) → T8 (4) → Neck (5) → Head (6)   ← 脊柱链
+│
+├── LeftUpperLeg (19) → LeftLowerLeg (20) → LeftFoot (21) → LeftToe (22)  ← 左腿
+├── RightUpperLeg (15) → RightLowerLeg (16) → RightFoot (17) → RightToe (18) ← 右腿
+│
+├── LeftShoulder (11) → LeftUpperArm (12) → LeftForearm (13) → LeftHand (14) ← 左臂
+└── RightShoulder (7) → RightUpperArm (8) → RightForearm (9) → RightHand (10) ← 右臂

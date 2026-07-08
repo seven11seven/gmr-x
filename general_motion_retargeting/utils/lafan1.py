@@ -3,6 +3,7 @@ from scipy.spatial.transform import Rotation as R
 
 import general_motion_retargeting.utils.lafan_vendor.utils as utils
 from general_motion_retargeting.utils.lafan_vendor.extract import read_bvh
+import matplotlib.pyplot as plt
 
 
 def load_bvh_file(bvh_file, format="lafan1"):
@@ -25,13 +26,16 @@ def load_bvh_file(bvh_file, format="lafan1"):
         result = {}
         for i, bone in enumerate(data.bones):
             orientation = utils.quat_mul(rotation_quat, global_data[0][frame, i])
-            position = global_data[1][frame, i] @ rotation_matrix.T / 100  # cm to m
+            # position = global_data[1][frame, i] @ rotation_matrix.T / 100  # cm to m for lafan1
+            position = global_data[1][frame, i] @ rotation_matrix.T # for fzmotion
             result[bone] = [position, orientation]
             
         if format == "lafan1":
             # Add modified foot pose
-            result["LeftFootMod"] = [result["LeftFoot"][0], result["LeftToe"][1]]
-            result["RightFootMod"] = [result["RightFoot"][0], result["RightToe"][1]]
+            # result["LeftFootMod"] = [result["LeftFoot"][0], result["LeftToe"][1]]
+            # result["RightFootMod"] = [result["RightFoot"][0], result["RightToe"][1]]
+            result["LeftFootMod"] = [result["LeftAnkle"][0], result["LeftToe"][1]]
+            result["RightFootMod"] = [result["RightAnkle"][0], result["RightToe"][1]]
         elif format == "nokov":
             result["LeftFootMod"] = [result["LeftFoot"][0], result["LeftToeBase"][1]]
             result["RightFootMod"] = [result["RightFoot"][0], result["RightToeBase"][1]]
