@@ -19,6 +19,7 @@ class GeneralMotionRetargeting:
         damping: float=5e-1, # change from 1e-1 to 1e-2.
         verbose: bool=True,
         use_velocity_limit: bool=False,
+        ik_config_path: str = None,
     ) -> None:
 
         # load the robot model
@@ -54,10 +55,11 @@ class GeneralMotionRetargeting:
                 print(f"Motor ID {i}: {motor_name}")
 
         # Load the IK config
-        with open(IK_CONFIG_DICT[src_human][tgt_robot]) as f:
+        ik_config_path = ik_config_path or IK_CONFIG_DICT[src_human][tgt_robot]
+        with open(ik_config_path) as f:
             ik_config = json.load(f)
         if verbose:
-            print("Use IK config: ", IK_CONFIG_DICT[src_human][tgt_robot])
+            print("Use IK config: ", ik_config_path)
         
         # compute the scale ratio based on given human height and the assumption in the IK config
         if actual_human_height is not None:
@@ -79,7 +81,10 @@ class GeneralMotionRetargeting:
             self.human_scale_table_vertical = scaled
             self.human_scale_table_horizontal = scaled
     
-        # self.robot_default_pos = np.array(ik_config["default_pos"])
+        if "default_pos" in ik_config and len(ik_config["default_pos"]) > 0:
+            self.robot_default_pos = np.array(ik_config["default_pos"], dtype=float)
+        else:
+            self.robot_default_pos = mj.MjData(self.model).qpos.copy()
         # used for retargeting
         self.ik_match_table1 = ik_config["ik_match_table1"]
         self.ik_match_table2 = ik_config["ik_match_table2"]

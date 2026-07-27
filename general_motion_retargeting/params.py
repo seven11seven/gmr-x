@@ -73,6 +73,7 @@ IK_CONFIG_DICT = {
     "bvh_xsens":{
         "unitree_g1": IK_CONFIG_ROOT / "xsens_bvh_to_g1.json",
         "D12": IK_CONFIG_ROOT / "xsens_bvh_to_D12.json",
+        "d20_v2": IK_CONFIG_ROOT / "xsens_bvh_to_d20_v2.json",
         "dz_robot": IK_CONFIG_ROOT / "xsens_bvh_to_dzrobot.json"
     },
     "xsens_realtime":{

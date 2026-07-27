@@ -3,7 +3,6 @@ import pathlib
 import time
 from general_motion_retargeting import GeneralMotionRetargeting as GMR
 from general_motion_retargeting import RobotMotionViewer
-from general_motion_retargeting.utils.lafan1 import load_lafan1_file
 from general_motion_retargeting.utils.xsens import load_xsens_file
 from rich import print
 from tqdm import tqdm
@@ -102,9 +101,17 @@ if __name__ == "__main__":
         choices=[
             "unitree_g1",
             "D12",
+            "d20_v2",
             "dz_robot",
         ],
         default="D12",
+    )
+
+    parser.add_argument(
+        "--ik_config",
+        default=None,
+        type=str,
+        help="Optional IK config JSON path. Overrides params.py mapping.",
     )
 
     parser.add_argument(
@@ -192,9 +199,10 @@ if __name__ == "__main__":
 
     # Initialize the retargeting system
     retargeter = GMR(
-        src_human="xsens_bvh",
+        src_human="bvh_xsens",
         tgt_robot=args.robot,
         actual_human_height=actual_human_height,
+        ik_config_path=args.ik_config,
     )
 
     motion_fps = int(1/frame_time)
@@ -203,7 +211,7 @@ if __name__ == "__main__":
     robot_motion_viewer = RobotMotionViewer(
         robot_type=args.robot,
         motion_fps=motion_fps,
-        transparent_robot=0,
+        transparent_robot=1,
         record_video=args.record_video,
         video_path=args.video_path,
         # video_width=2080,
@@ -249,7 +257,7 @@ if __name__ == "__main__":
 
         # visualize
         robot_motion_viewer.step(
-            root_pos=qpos[:3],
+            root_pos=qpos[:3] + [0.0, 0.0, 0.0],
             root_rot=qpos[3:7],
             dof_pos=qpos[7:],
             human_motion_data=retargeter.scaled_human_data,
@@ -259,18 +267,18 @@ if __name__ == "__main__":
 
         i += 1
 
+        # if i ==  10: input("Input enter to continue")
+        if i == 510: input("Input enter to continue")
+        # if i == 800: input("Input enter to continue")
+
         if args.save_path is not None:
-            # qpos_list.append(qpos)
-            
-            xyzw = qpos[3:7].copy()
-            wxyz = xyzw[[1,2,3,0]].copy()
-            qpos[3:7] = wxyz
             if i > 10 and i < (len(lafan1_data_frames) - 10):
-                qpos_list.append(qpos)
+                qpos_list.append(qpos.copy())
 
     if args.save_path is not None:
         import pickle
 
+        qpos_list = qpos_list[10:]
         root_pos = np.array([qpos[:3] for qpos in qpos_list])
         # save from wxyz to xyzw
         root_rot = np.array([qpos[3:7] for qpos in qpos_list])
@@ -289,8 +297,9 @@ if __name__ == "__main__":
         # np.set_printoptions(threshold=np.inf)
         # print(full_motion[:255,8])
 
-        file_name = "./datas/target/" + args.bvh_file.split("/")[-1].split(".")[0] + "_" + args.robot + ".csv"
-        np.savetxt(file_name, full_motion, delimiter=",")
+        csv_motion = full_motion.copy()
+        csv_motion[:, 3:7] = csv_motion[:, 3:7][:, [1, 2, 3, 0]]
+        np.savetxt(args.save_path, csv_motion, delimiter=",")
 
         motion_data = {
             "fps": motion_fps,
