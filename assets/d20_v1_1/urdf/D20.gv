@@ -1,0 +1,110 @@
+digraph G {
+node [shape=box];
+"world" [label="world"];
+"base_link" [label="base_link"];
+"depth_camera_link" [label="depth_camera_link"];
+"left_hip_pitch_link" [label="left_hip_pitch_link"];
+"left_hip_roll_link" [label="left_hip_roll_link"];
+"left_hip_yaw_link" [label="left_hip_yaw_link"];
+"left_knee_pitch_link" [label="left_knee_pitch_link"];
+"left_ankle_pitch_link" [label="left_ankle_pitch_link"];
+"left_ankle_roll_link" [label="left_ankle_roll_link"];
+"right_hip_pitch_link" [label="right_hip_pitch_link"];
+"right_hip_roll_link" [label="right_hip_roll_link"];
+"right_hip_yaw_link" [label="right_hip_yaw_link"];
+"right_knee_pitch_link" [label="right_knee_pitch_link"];
+"right_ankle_pitch_link" [label="right_ankle_pitch_link"];
+"right_ankle_roll_link" [label="right_ankle_roll_link"];
+"waist_yaw_link" [label="waist_yaw_link"];
+"waist_roll_link" [label="waist_roll_link"];
+"waist_pitch_link" [label="waist_pitch_link"];
+"head_link" [label="head_link"];
+"left_shoulder_pitch_link" [label="left_shoulder_pitch_link"];
+"left_shoulder_roll_link" [label="left_shoulder_roll_link"];
+"left_shoulder_yaw_link" [label="left_shoulder_yaw_link"];
+"left_elbow_pitch_link" [label="left_elbow_pitch_link"];
+"left_wrist_roll_link" [label="left_wrist_roll_link"];
+"left_wrist_pitch_link" [label="left_wrist_pitch_link"];
+"left_wrist_yaw_link" [label="left_wrist_yaw_link"];
+"left_hand_link" [label="left_hand_link"];
+"right_shoulder_pitch_link" [label="right_shoulder_pitch_link"];
+"right_shoulder_roll_link" [label="right_shoulder_roll_link"];
+"right_shoulder_yaw_link" [label="right_shoulder_yaw_link"];
+"right_elbow_pitch_link" [label="right_elbow_pitch_link"];
+"right_wrist_roll_link" [label="right_wrist_roll_link"];
+"right_wrist_pitch_link" [label="right_wrist_pitch_link"];
+"right_wrist_yaw_link" [label="right_wrist_yaw_link"];
+"right_hand_link" [label="right_hand_link"];
+"waist_imu_link" [label="waist_imu_link"];
+node [shape=ellipse, color=blue, fontcolor=blue];
+"world" -> "world_joint" [label="xyz: 0 0 0 \nrpy: 0 -0 0"]
+"world_joint" -> "base_link"
+"base_link" -> "depth_camera_joint" [label="xyz: 0.0508451 0.02125 -0.0993539 \nrpy: 0 -0 0"]
+"depth_camera_joint" -> "depth_camera_link"
+"base_link" -> "left_hip_pitch_joint" [label="xyz: 0 0.11842 -0.063749 \nrpy: 0 -0 0"]
+"left_hip_pitch_joint" -> "left_hip_pitch_link"
+"left_hip_pitch_link" -> "left_hip_roll_joint" [label="xyz: 0.0548 0.016583 -0.10105 \nrpy: 0 -0 0"]
+"left_hip_roll_joint" -> "left_hip_roll_link"
+"left_hip_roll_link" -> "left_hip_yaw_joint" [label="xyz: -0.0548 0 -0.1818 \nrpy: 0 -0 0"]
+"left_hip_yaw_joint" -> "left_hip_yaw_link"
+"left_hip_yaw_link" -> "left_knee_pitch_joint" [label="xyz: -0.03 0.0629 -0.1332 \nrpy: 0 -0 0"]
+"left_knee_pitch_joint" -> "left_knee_pitch_link"
+"left_knee_pitch_link" -> "left_ankle_pitch_joint" [label="xyz: 0.03 -0.0629 -0.45 \nrpy: 0 -0 0"]
+"left_ankle_pitch_joint" -> "left_ankle_pitch_link"
+"left_ankle_pitch_link" -> "left_ankle_roll_joint" [label="xyz: 0 0 0 \nrpy: 0 -0 0"]
+"left_ankle_roll_joint" -> "left_ankle_roll_link"
+"base_link" -> "right_hip_pitch_joint" [label="xyz: 0 -0.11842 -0.063749 \nrpy: 0 -0 0"]
+"right_hip_pitch_joint" -> "right_hip_pitch_link"
+"right_hip_pitch_link" -> "right_hip_roll_joint" [label="xyz: 0.0548 -0.016583 -0.10105 \nrpy: 0 -0 0"]
+"right_hip_roll_joint" -> "right_hip_roll_link"
+"right_hip_roll_link" -> "right_hip_yaw_joint" [label="xyz: -0.0548 0 -0.1818 \nrpy: 0 -0 0"]
+"right_hip_yaw_joint" -> "right_hip_yaw_link"
+"right_hip_yaw_link" -> "right_knee_pitch_joint" [label="xyz: -0.03 -0.0629 -0.1332 \nrpy: 0 -0 0"]
+"right_knee_pitch_joint" -> "right_knee_pitch_link"
+"right_knee_pitch_link" -> "right_ankle_pitch_joint" [label="xyz: 0.03 0.0629 -0.45 \nrpy: 0 -0 0"]
+"right_ankle_pitch_joint" -> "right_ankle_pitch_link"
+"right_ankle_pitch_link" -> "right_ankle_roll_joint" [label="xyz: 0 0 0 \nrpy: 0 -0 0"]
+"right_ankle_roll_joint" -> "right_ankle_roll_link"
+"base_link" -> "waist_yaw_joint" [label="xyz: 0 0 0.0425 \nrpy: 0 -0 0"]
+"waist_yaw_joint" -> "waist_yaw_link"
+"waist_yaw_link" -> "waist_roll_joint" [label="xyz: 0 0 0.0615 \nrpy: 0 -0 0"]
+"waist_roll_joint" -> "waist_roll_link"
+"waist_roll_link" -> "waist_pitch_joint" [label="xyz: 0 0 0 \nrpy: 0 -0 0"]
+"waist_pitch_joint" -> "waist_pitch_link"
+"waist_pitch_link" -> "head_joint" [label="xyz: 0 0 0.369 \nrpy: 0 -0 0"]
+"head_joint" -> "head_link"
+"waist_pitch_link" -> "left_shoulder_pitch_joint" [label="xyz: 0 0.151 0.294 \nrpy: 0 -0 0"]
+"left_shoulder_pitch_joint" -> "left_shoulder_pitch_link"
+"left_shoulder_pitch_link" -> "left_shoulder_roll_joint" [label="xyz: 0.042 0.07905 -0.00060137 \nrpy: 0 -0 0"]
+"left_shoulder_roll_joint" -> "left_shoulder_roll_link"
+"left_shoulder_roll_link" -> "left_shoulder_yaw_joint" [label="xyz: -0.040693 0 -0.13095 \nrpy: 0 -0 0"]
+"left_shoulder_yaw_joint" -> "left_shoulder_yaw_link"
+"left_shoulder_yaw_link" -> "left_elbow_pitch_joint" [label="xyz: 0.01419 0.0421 -0.11386 \nrpy: 0 -0 0"]
+"left_elbow_pitch_joint" -> "left_elbow_pitch_link"
+"left_elbow_pitch_link" -> "left_wrist_roll_joint" [label="xyz: 0.07445 -0.0421 -0.015 \nrpy: 0 -0 0"]
+"left_wrist_roll_joint" -> "left_wrist_roll_link"
+"left_wrist_roll_link" -> "left_wrist_pitch_joint" [label="xyz: 0.11555 0.034573 0 \nrpy: 0 -0 0"]
+"left_wrist_pitch_joint" -> "left_wrist_pitch_link"
+"left_wrist_pitch_link" -> "left_wrist_yaw_joint" [label="xyz: 0.084991 -0.034565 0.034873 \nrpy: 0 -0 0"]
+"left_wrist_yaw_joint" -> "left_wrist_yaw_link"
+"left_wrist_yaw_link" -> "left_hand_joint" [label="xyz: 0.074477 0 -0.034373 \nrpy: 0 -0 0"]
+"left_hand_joint" -> "left_hand_link"
+"waist_pitch_link" -> "right_shoulder_pitch_joint" [label="xyz: 0 -0.151 0.294 \nrpy: 0 -0 0"]
+"right_shoulder_pitch_joint" -> "right_shoulder_pitch_link"
+"right_shoulder_pitch_link" -> "right_shoulder_roll_joint" [label="xyz: 0.042 -0.07905 0.00020807 \nrpy: 0 -0 0"]
+"right_shoulder_roll_joint" -> "right_shoulder_roll_link"
+"right_shoulder_roll_link" -> "right_shoulder_yaw_joint" [label="xyz: -0.041502 0 -0.13176 \nrpy: 0 -0 0"]
+"right_shoulder_yaw_joint" -> "right_shoulder_yaw_link"
+"right_shoulder_yaw_link" -> "right_elbow_pitch_joint" [label="xyz: 0.015 -0.0421 -0.11386 \nrpy: 0 -0 0"]
+"right_elbow_pitch_joint" -> "right_elbow_pitch_link"
+"right_elbow_pitch_link" -> "right_wrist_roll_joint" [label="xyz: 0.07445 0.0421 -0.015 \nrpy: 0 -0 0"]
+"right_wrist_roll_joint" -> "right_wrist_roll_link"
+"right_wrist_roll_link" -> "right_wrist_pitch_joint" [label="xyz: 0.11555 -0.034573 0 \nrpy: 0 -0 0"]
+"right_wrist_pitch_joint" -> "right_wrist_pitch_link"
+"right_wrist_pitch_link" -> "right_wrist_yaw_joint" [label="xyz: 0.084991 0.034565 0.034873 \nrpy: 0 -0 0"]
+"right_wrist_yaw_joint" -> "right_wrist_yaw_link"
+"right_wrist_yaw_link" -> "right_hand_joint" [label="xyz: 0.074477 3.2101e-05 -0.034386 \nrpy: 0 -0 0"]
+"right_hand_joint" -> "right_hand_link"
+"waist_pitch_link" -> "waist_imu_joint" [label="xyz: 0.0073949 0 0.057503 \nrpy: 0 -0 0"]
+"waist_imu_joint" -> "waist_imu_link"
+}
