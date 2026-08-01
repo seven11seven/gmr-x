@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(conda run *)",
+      "Read(//tmp/**)",
+      "Bash(rm -f /tmp/links_mapping_test.html /tmp/links_mapping_noframes.html)"
+    ],
+    "additionalDirectories": [
+      "/tmp"
+    ]
+  }
+}
