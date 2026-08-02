@@ -719,46 +719,91 @@ def _build_frame_slider_js(frame_data_json: str) -> str:
 #  MuJoCo viewer – Panel B: Mesh rendering + human skeleton overlay
 # ============================================================================
 
-def _draw_human_skeleton_mj(viewer, human_positions, human_edges):
+def _draw_human_skeleton_mj(viewer, human_positions, human_edges, human_data=None):
     """Draw human skeleton as custom geometry in the MuJoCo viewer.
 
-    Joints → small orange spheres.  Bones → thin orange connectors.
+    - Joints → **light-green** spheres
+    - Bones  → **orange** thin connectors between parent–child
+    - Each joint also gets RGB orientation axes (X=red, Y=green, Z=blue)
     """
-    # Joint spheres
+    C_JOINT = [0.4, 1.0, 0.4, 0.90]        # light green
+    C_BONE  = [1.0, 0.55, 0.0, 0.50]        # orange, semi-transparent
+    AXIS_LEN = 0.08                          # +1/3 from 0.06
+    AXIS_RGB = [[1, 0, 0, 1], [0, 1, 0, 1], [0, 0, 1, 1]]
+
+    # Pre-compute rotation matrices from quaternions (scalar-first [w,x,y,z])
+    orient_mats = {}
+    if human_data:
+        for name, val in human_data.items():
+            if name in human_positions and len(val) >= 2:
+                quat = np.asarray(val[1], dtype=float)
+                if quat.shape == (4,):
+                    orient_mats[name] = R.from_quat(quat, scalar_first=True).as_matrix()
+
+    # ---- joint spheres (light green, 2/3 of original size) ----
     for _name, pos in human_positions.items():
         g = viewer.user_scn.geoms[viewer.user_scn.ngeom]
         mj.mjv_initGeom(
-            g,
-            type=mj.mjtGeom.mjGEOM_SPHERE,
-            size=[0.025, 0, 0],
+            g, type=mj.mjtGeom.mjGEOM_SPHERE,
+            size=[0.015, 0, 0],
             pos=np.array(pos, dtype=float),
             mat=np.eye(3).flatten(),
-            rgba=[1.0, 0.55, 0.0, 0.85],
+            rgba=C_JOINT,
         )
         viewer.user_scn.ngeom += 1
 
-    # Bone connectors (thin arrows → cylinders between parent→child)
+    # ---- bone connectors (orange capsules, no arrowhead) ----
     for parent, child in human_edges:
         if parent not in human_positions or child not in human_positions:
             continue
+        p1 = np.array(human_positions[parent], dtype=float)
+        p2 = np.array(human_positions[child], dtype=float)
+        mid = (p1 + p2) / 2
+        direction = p2 - p1
+        dist = float(np.linalg.norm(direction))
+        if dist < 1e-6:
+            continue
+        half = dist / 2
+        z_axis = direction / dist
+        # pick an x-axis perpendicular to z
+        ref = np.array([1.0, 0.0, 0.0]) if abs(z_axis[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+        x_axis = np.cross(z_axis, ref)
+        x_axis /= np.linalg.norm(x_axis)
+        y_axis = np.cross(z_axis, x_axis)
+        bone_mat = np.column_stack([x_axis, y_axis, z_axis])
+
         g = viewer.user_scn.geoms[viewer.user_scn.ngeom]
         mj.mjv_initGeom(
-            g,
-            type=mj.mjtGeom.mjGEOM_ARROW,
-            size=[0.005, 0.005, 0.005],
-            pos=np.zeros(3),
-            mat=np.eye(3).flatten(),
-            rgba=[1.0, 0.55, 0.0, 0.55],
+            g, type=mj.mjtGeom.mjGEOM_CAPSULE,
+            size=[0.005, half, 0.0],       # radius, half-length
+            pos=mid,
+            mat=bone_mat.flatten(),
+            rgba=C_BONE,
         )
-        mj.mjv_connector(
-            g,
-            type=mj.mjtGeom.mjGEOM_ARROW,
-            width=0.006,
-            from_=np.array(human_positions[parent], dtype=float),
-            to=np.array(human_positions[child], dtype=float),
-        )
-        g.rgba = [1.0, 0.55, 0.0, 0.55]
         viewer.user_scn.ngeom += 1
+
+    # ---- orientation axes (R/G/B arrows at each joint) ----
+    for name, pos in human_positions.items():
+        if name not in orient_mats:
+            continue
+        mat = orient_mats[name]
+        origin = np.array(pos, dtype=float)
+        for ai in range(3):
+            g = viewer.user_scn.geoms[viewer.user_scn.ngeom]
+            direction = mat[:, ai]
+            mj.mjv_initGeom(
+                g, type=mj.mjtGeom.mjGEOM_ARROW,
+                size=[0.003, 0.0, 0.0],        # no arrowhead on axes
+                pos=origin,
+                mat=mat.flatten(),
+                rgba=AXIS_RGB[ai],
+            )
+            mj.mjv_connector(
+                g, type=mj.mjtGeom.mjGEOM_ARROW, width=0.003,
+                from_=origin,
+                to=origin + direction * AXIS_LEN,
+            )
+            viewer.user_scn.ngeom += 1
 
 
 def launch_mujoco_viewer(
@@ -845,6 +890,7 @@ def launch_mujoco_viewer(
     prev_frame = -1
     last_time = time.time()
     loop_count = 0
+    _axes_diag_done = False  # one-shot diagnostic
 
     while viewer.is_running():
         now = time.time()
@@ -876,7 +922,14 @@ def launch_mujoco_viewer(
             # Draw human skeleton overlay
             viewer.user_scn.ngeom = 0
             try:
-                _draw_human_skeleton_mj(viewer, fd["human_positions"], human_edges)
+                _draw_human_skeleton_mj(viewer, fd["human_positions"], human_edges,
+                                        fd.get("human_data", {}))
+                if not _axes_diag_done:
+                    hd = fd.get("human_data", {})
+                    n_quat = sum(1 for v in hd.values()
+                                 if len(v) >= 2 and np.asarray(v[1]).shape == (4,))
+                    print(f"  [mj] human_data joints: {len(hd)}, with quat: {n_quat}")
+                    _axes_diag_done = True
             except Exception as exc:
                 print(f"  [WARN] _draw_human_skeleton_mj error: {exc}")
 
