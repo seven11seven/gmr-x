@@ -1012,6 +1012,36 @@ def _start_sync_server(html_str: str) -> int:
 #  Mapping summary
 # ============================================================================
 
+def _write_csv(path: str, all_frame_data: list):
+    """Export robot motion to CSV.
+    Columns (36): base_x, base_y, base_z, base_qx, base_qy, base_qz, base_qw,
+    then 29 joint values in MuJoCo default order.
+    """
+    rows = []
+    for fd in all_frame_data:
+        qpos = fd["qpos"]
+        base_pos = qpos[0:3]
+        base_quat_xyzw = np.roll(qpos[3:7], -1)  # wxyz → xyzw
+        rows.append(np.concatenate([base_pos, base_quat_xyzw, qpos[7:]]))
+    csv_data = np.stack(rows, axis=0)
+    np.savetxt(path, csv_data, delimiter=",", fmt="%.8f",
+               header=(
+                   "base_x,base_y,base_z,"
+                   "base_qx,base_qy,base_qz,base_qw,"
+                   "waist_yaw,waist_roll,waist_pitch,"
+                   "L_shoulder_pitch,L_shoulder_roll,L_shoulder_yaw,"
+                   "L_elbow_pitch,L_wrist_roll,L_wrist_pitch,L_wrist_yaw,"
+                   "R_shoulder_pitch,R_shoulder_roll,R_shoulder_yaw,"
+                   "R_elbow_pitch,R_wrist_roll,R_wrist_pitch,R_wrist_yaw,"
+                   "L_hip_pitch,L_hip_roll,L_hip_yaw,"
+                   "L_knee_pitch,L_ankle_pitch,L_ankle_roll,"
+                   "R_hip_pitch,R_hip_roll,R_hip_yaw,"
+                   "R_knee_pitch,R_ankle_pitch,R_ankle_roll"),
+               comments="")
+    print(f"  CSV saved: {path}  ({csv_data.shape[0]} rows x "
+          f"{csv_data.shape[1]} cols)")
+
+
 def print_mapping_summary(robot_mapped, human_mapped, human_to_robot):
     """Print a compact mapping table to the terminal."""
     print("\n" + "=" * 70)
@@ -1067,6 +1097,13 @@ def main():
 
     ap.add_argument("--human-height", type=float, default=None,
                     help="Actual human height in meters (auto-detected if omitted)")
+
+    ap.add_argument("--save", type=str, default=None, metavar="PATH",
+                    help="Save retargeting results to .pkl file (skip this step next time)")
+    ap.add_argument("--save-csv", type=str, default=None, metavar="PATH",
+                    help="Save robot motion to CSV (base_pos_xyz + base_quat_xyzw + dof_pos)")
+    ap.add_argument("--load", type=str, default=None, metavar="PATH",
+                    help="Load pre-computed retargeting results from .pkl file")
 
     args = ap.parse_args()
 
@@ -1133,49 +1170,76 @@ def main():
           f"{len(human_mapped)} mapped human joints")
     print_mapping_summary(robot_mapped, human_mapped, human_to_robot)
 
-    # ---- 4. Retarget all frames ---------------------------------------------
-    print("\n[4/5] Retargeting all frames (this may take a while) …")
-
-    # Dynamically register the user-specified XML so GMR can load it.
-    # GMR resolves robots via ROBOT_XML_DICT; we inject the custom path here.
-    from general_motion_retargeting.params import ROBOT_XML_DICT, ROBOT_BASE_DICT
-
-    _custom_robot_key = "_custom_robot_xml"
-    ROBOT_XML_DICT[_custom_robot_key] = str(xml_path)
-    ROBOT_BASE_DICT[_custom_robot_key] = "base_link"
-
-    from general_motion_retargeting import GeneralMotionRetargeting as GMR
-
-    # Height / scaling ratio
-    actual_human_height = float(actual_human_height)
-    use_height = float(args.human_height) if args.human_height is not None else actual_human_height
-    with open(ik_path) as fh:
-        _ik_tmp = json.load(fh)
-    assumed_h = float(_ik_tmp.get("human_height_assumption", 1.8))
-    ratio = use_height / assumed_h if use_height else 1.0
-
-    used_label = "auto" if args.human_height is None else f"{args.human_height:.2f}"
-    print("\n  Human height: detected=%.2fm  assumed(ik_config)=%.2fm  used=%s"
-          % (actual_human_height, assumed_h, used_label))
-    print("  Scale ratio = %.4f  (1.0 = exact match with links_mapping proportions)"
-          % ratio)
-    if abs(ratio - 1.0) > 0.01:
-        print("  ! proportions differ from links_mapping tool by %.1f%%"
-              % (abs(1.0 - ratio) * 100))
-        print("    -> use --human-height %.1f to match links_mapping" % assumed_h)
-
-    retargeter = GMR(
-        src_human="bvh_xsens",
-        tgt_robot=_custom_robot_key,
-        actual_human_height=use_height,
-        ik_config_path=str(ik_path),
-        verbose=False,
-    )
-
-    # For display, rename robot to a short title
+    # ---- 4. Retarget all frames (or load from cache) ------------------------
     title = f"Retargeting: {bvh_path.name} → {xml_path.parent.name}  [{ik_path.name}]"
 
-    all_frame_data = process_all_frames(retargeter, human_frames, robot_model)
+    if args.load:
+        print(f"\n[4/5] Loading cached retargeting results from {args.load} …")
+        import pickle
+        with open(args.load, "rb") as fh:
+            cache = pickle.load(fh)
+        all_frame_data = cache["all_frame_data"]
+        motion_fps = cache.get("motion_fps", motion_fps)
+        print(f"  Loaded {len(all_frame_data)} frames (skipping retargeting).")
+
+        # CSV export from loaded cache
+        if args.save_csv:
+            _write_csv(args.save_csv, all_frame_data)
+    else:
+        print("\n[4/5] Retargeting all frames (this may take a while) …")
+
+        # Dynamically register the user-specified XML so GMR can load it.
+        from general_motion_retargeting.params import ROBOT_XML_DICT, ROBOT_BASE_DICT
+
+        _custom_robot_key = "_custom_robot_xml"
+        ROBOT_XML_DICT[_custom_robot_key] = str(xml_path)
+        ROBOT_BASE_DICT[_custom_robot_key] = "base_link"
+
+        from general_motion_retargeting import GeneralMotionRetargeting as GMR
+
+        # Height / scaling ratio
+        actual_human_height = float(actual_human_height)
+        use_height = float(args.human_height) if args.human_height is not None else actual_human_height
+        with open(ik_path) as fh:
+            _ik_tmp = json.load(fh)
+        assumed_h = float(_ik_tmp.get("human_height_assumption", 1.8))
+        ratio = use_height / assumed_h if use_height else 1.0
+
+        used_label = "auto" if args.human_height is None else f"{args.human_height:.2f}"
+        print("\n  Human height: detected=%.2fm  assumed(ik_config)=%.2fm  used=%s"
+              % (actual_human_height, assumed_h, used_label))
+        print("  Scale ratio = %.4f  (1.0 = exact match with links_mapping proportions)"
+              % ratio)
+        if abs(ratio - 1.0) > 0.01:
+            print("  ! proportions differ from links_mapping tool by %.1f%%"
+                  % (abs(1.0 - ratio) * 100))
+            print("    -> use --human-height %.1f to match links_mapping" % assumed_h)
+
+        retargeter = GMR(
+            src_human="bvh_xsens",
+            tgt_robot=_custom_robot_key,
+            actual_human_height=use_height,
+            ik_config_path=str(ik_path),
+            verbose=False,
+        )
+
+        all_frame_data = process_all_frames(retargeter, human_frames, robot_model)
+
+        if args.save:
+            print(f"  Saving results to {args.save} …")
+            import pickle
+            cache = {
+                "all_frame_data": all_frame_data,
+                "motion_fps": motion_fps,
+                "human_edges": human_edges,
+            }
+            with open(args.save, "wb") as fh:
+                pickle.dump(cache, fh)
+            print(f"  Saved {len(all_frame_data)} frames to {args.save}")
+
+        # CSV export
+        if args.save_csv:
+            _write_csv(args.save_csv, all_frame_data)
 
     # ---- 5a. Panel A – Plotly HTML ------------------------------------------
     sync_port = 0
