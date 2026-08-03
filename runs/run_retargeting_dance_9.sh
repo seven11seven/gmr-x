@@ -20,3 +20,4 @@ conda run -n gmr_cpython python tools/retargeting_visualizer/visualize_retargeti
   --save outputs/d20_29dof/dance_9.pkl \
   --save-csv outputs/d20_29dof/dance_9.csv \
   "$@"
+f
