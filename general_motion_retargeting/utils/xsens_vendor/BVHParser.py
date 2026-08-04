@@ -204,7 +204,7 @@ class BVHParser:
                 self.active = len(self.parents) - 1
                 self.channel_map.append((node, 0))
             elif self.line.startswith("OFFSET"):
-                parts = re.findall(r"[-+]?\d*\.\d+|[-+]?\d+\.\d*", self.line)
+                parts = re.findall(r"[-+]?\d*\.\d+|[-+]?\d+\.\d*|[-+]?\d+", self.line)
                 if len(parts) != 3:
                     raise ValueError(f"Invalid OFFSET format in self.line: {self.line}")
                 offset = [float(p) for p in parts]
@@ -271,7 +271,7 @@ class BVHParser:
                 print(f"MOTION frame time is {self.frame_time} s/frame")
             else:
                 # 解析帧数据
-                parts = re.findall(r"[-+]?\d*\.\d+|[-+]?\d+\.\d*", self.line)
+                parts = re.findall(r"[-+]?\d*\.\d+|[-+]?\d+\.\d*|[-+]?\d+", self.line)
                 frame_data = [float(p) for p in parts]
                 self.frames.append(frame_data)
         except Exception as e:

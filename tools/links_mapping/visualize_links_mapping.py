@@ -113,7 +113,7 @@ def get_robot_body_edges(bodies):
 # BVH helpers
 # ===================================================================
 
-def load_bvh_first_frame(bvh_path, bvh_format="3DSM", scale=1.0):
+def load_bvh_first_frame(bvh_path, bvh_format="3DSM", scale=0.01):
     from general_motion_retargeting.utils.xsens_vendor.BVHParser import (
         BVHParser, euler_to_quat, quat_fk, remove_quat_discontinuities,
     )
@@ -137,10 +137,15 @@ def load_bvh_first_frame(bvh_path, bvh_format="3DSM", scale=1.0):
             global_quats[0, ji].copy(),
         ]
     for side in ("Left", "Right"):
-        ankle, toe, mod = f"{side}Ankle", f"{side}Toe", f"{side}FootMod"
-        if ankle in frame_data and toe in frame_data:
-            frame_data[mod] = [frame_data[ankle][0].copy(),
-                               frame_data[toe][1].copy()]
+        # Try multiple naming conventions for ankle/toe joints across BVH files
+        ankle_candidates = [f"{side}Ankle", f"{side}Foot"]
+        toe_candidates = [f"{side}Toe", f"{side}ToeBase"]
+        ankle_name = next((n for n in ankle_candidates if n in frame_data), None)
+        toe_name = next((n for n in toe_candidates if n in frame_data), None)
+        mod = f"{side}FootMod"
+        if ankle_name and toe_name:
+            frame_data[mod] = [frame_data[ankle_name][0].copy(),
+                               frame_data[toe_name][1].copy()]
 
     edges = []
     name_set = set(frame_data.keys())
@@ -155,9 +160,13 @@ def load_bvh_first_frame(bvh_path, bvh_format="3DSM", scale=1.0):
                 and pname in name_set and name in name_set):
             edges.append((pname, name))
     for side in ("Left", "Right"):
-        mod, ankle = f"{side}FootMod", f"{side}Ankle"
+        mod = f"{side}FootMod"
         if mod in frame_data:
-            edges.append((ankle, mod))
+            # Find the actual ankle joint name used in this BVH
+            ankle_candidates = [f"{side}Ankle", f"{side}Foot"]
+            ankle_name = next((n for n in ankle_candidates if n in frame_data), None)
+            if ankle_name:
+                edges.append((ankle_name, mod))
     return frame_data, edges
 
 
@@ -170,6 +179,24 @@ def process_human_data(human_data, ik_config, ratio=1.0):
                 ik_config.get("human_scale_table_vertical", {}).items()}
     sh_table = {k: v * ratio for k, v in
                 ik_config.get("human_scale_table_horizontal", {}).items()}
+    # Fallback to unified scale table if split tables are not present
+    unified = ik_config.get("human_scale_table", {})
+    if not sv_table and not sh_table and unified:
+        sv_table = {k: v * ratio for k, v in unified.items()}
+        sh_table = {k: v * ratio for k, v in unified.items()}
+    # Fallback: ensure FootMod joints inherit scale from source foot/ankle
+    for side in ("Left", "Right"):
+        mod_name = f"{side}FootMod"
+        if mod_name not in human_data:
+            continue
+        src_candidates = [f"{side}Foot", f"{side}Ankle"]
+        if mod_name not in sv_table:
+            for src in src_candidates:
+                if src in sv_table:
+                    sv_table[mod_name] = sv_table[src]
+                    sh_table[mod_name] = sh_table[src]
+                    break
+
     human_root = ik_config["human_root_name"]
     ground = ik_config.get("ground_height", 0.0) * np.array([0, 0, 1])
 
@@ -179,11 +206,13 @@ def process_human_data(human_data, ik_config, ratio=1.0):
 
     local: dict = {}
     for name in human_data:
-        if name == human_root or name not in sv_table:
+        if name == human_root:
             continue
         lp = human_data[name][0] - root_pos
-        local[name] = lp * np.array([sh_table[name], sh_table[name],
-                                      sv_table[name]])
+        if name in sv_table:
+            lp = lp * np.array([sh_table[name], sh_table[name],
+                                sv_table[name]])
+        local[name] = lp
     scaled: dict = {human_root: (scaled_root, root_quat)}
     for name, lp in local.items():
         scaled[name] = (lp + scaled_root, human_data[name][1])
@@ -578,6 +607,9 @@ def main():
     ap.add_argument("--human-height", type=float, default=None,
                     help="Actual human height (m). Overrides ratio. "
                          "Default: use scale table as-is (ratio=1.0)")
+    ap.add_argument("--bvh-scale", type=float, default=0.01,
+                    help="BVH unit to meter scale factor. "
+                         "Default: 0.01 (cm→m). Use 1.0 if BVH is already in meters.")
     args = ap.parse_args()
 
     xml_path = (_PROJECT_ROOT / args.xml).resolve()
@@ -606,7 +638,7 @@ def main():
 
     # ---- 2. BVH ----
     print("[2/4] Loading BVH first frame …")
-    human_data, human_edges = load_bvh_first_frame(bvh_path)
+    human_data, human_edges = load_bvh_first_frame(bvh_path, scale=args.bvh_scale)
     print(f"  {len(human_data)} joints, {len(human_edges)} edges")
 
     # ---- 3. IK config ----

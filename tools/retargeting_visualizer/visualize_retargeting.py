@@ -121,7 +121,7 @@ def get_robot_edges(bodies):
 
 def load_bvh_hierarchy(bvh_path: pathlib.Path):
     """Parse BVH skeleton hierarchy only (no motion data)."""
-    p = BVHParser("zxy", 1.0)
+    p = BVHParser("zxy", 0.01)
     with open(bvh_path, "r") as fh:
         content = fh.read()
     # Parse just enough to get hierarchy – HIERARCHY_paser populates names/parents
@@ -134,7 +134,7 @@ def load_bvh_all_frames(
     start: Optional[int] = None,
     end: Optional[int] = None,
     reset_to_zero: bool = False,
-    scale: float = 1.0,
+    scale: float = 0.01,
 ):
     """Load all BVH frames with global positions/quaternions.
 
@@ -177,17 +177,31 @@ def load_bvh_all_frames(
             if ankle in result and toe in result:
                 result[mod] = [result[ankle][0].copy(),
                                result[toe][1].copy()]
+            else:
+                ankle_alt, toe_alt, mod_alt = (
+                    f"{side}Foot", f"{side}ToeBase", f"{side}FootMod"
+                )
+                if ankle_alt in result and toe_alt in result:
+                    result[mod_alt] = [result[ankle_alt][0].copy(),
+                                       result[toe_alt][1].copy()]
         frames.append(result)
+
+    def _pose_pos(frame, *names):
+        for name in names:
+            pose = frame.get(name)
+            if pose is not None:
+                return pose[0]
+        return np.zeros(3)
 
     # Compute max height across ALL frames (first frame may show person on ground
     # for "fall and get up" motions, which would badly underestimate height).
     max_height = 0.0
     for frame in frames:
         foot_z = min(
-            frame.get("LeftFootMod", frame.get("LeftAnkle", [0, 0, 0]))[0][2],
-            frame.get("RightFootMod", frame.get("RightAnkle", [0, 0, 0]))[0][2],
+            _pose_pos(frame, "LeftFootMod", "LeftAnkle", "LeftFoot")[2],
+            _pose_pos(frame, "RightFootMod", "RightAnkle", "RightFoot")[2],
         )
-        head_z = frame.get("Head", [[0, 0, 0]])[0][2]
+        head_z = _pose_pos(frame, "Head")[2]
         h = head_z - foot_z
         if h > max_height:
             max_height = h
@@ -340,16 +354,36 @@ def build_plotly_html(
     title="Retargeting Viewer",
     motion_fps=30.0,
     sync_port=0,
+    max_web_frames=800,
 ):
     """Build an interactive plotly HTML page with a frame slider.
 
     **Strategy**: Pre-compute the COMPLETE list of Plotly trace dicts for
     *every* frame in Python and embed them as JSON.  JavaScript only calls
     ``Plotly.react()`` with the pre-built traces.
+
+    When total frames exceed *max_web_frames*, the data is downsampled to
+    keep the HTML size manageable (avoiding browser OOM / black screen).
     """
-    N = len(all_frame_data)
-    if N == 0:
+    N_total = len(all_frame_data)
+    if N_total == 0:
         raise ValueError("No frames to visualize.")
+
+    # ---- Downsample for web display when frame count is too large ----------
+    web_step = 1
+    web_fps = motion_fps
+    web_indices = list(range(N_total))  # slider value → original frame index
+    if N_total > max_web_frames:
+        web_step = max(1, N_total // max_web_frames)
+        ds_indices = list(range(0, N_total, web_step))
+        if ds_indices[-1] != N_total - 1:
+            ds_indices.append(N_total - 1)  # always include last frame
+        all_frame_data = [all_frame_data[i] for i in ds_indices]
+        web_fps = motion_fps / web_step
+        web_indices = ds_indices
+        print(f"  Panel A: downsampled {N_total} → {len(all_frame_data)} frames "
+              f"(step={web_step}) to keep HTML < ~{max_web_frames} traces")
+    N = len(all_frame_data)
 
     frame0 = all_frame_data[0]
     robot_names = sorted(frame0["robot_positions"].keys())
@@ -528,8 +562,10 @@ def build_plotly_html(
 
     # ---- Serialize everything for JS --------------------------------------
     frame_data_json = _json.dumps({
-        "totalFrames": N,
-        "fps": motion_fps,
+        "totalFrames": N_total,          # original frame count (slider range)
+        "webStep": web_step,             # downsampling step (1 = no downsample)
+        "webIndices": web_indices,        # slider value → original frame index
+        "fps": web_fps,
         "syncPort": sync_port if sync_port else 0,
         "frames": all_frames_traces,
         "layout": layout,
@@ -550,7 +586,7 @@ def build_plotly_html(
         "</head>",
         "<body>",
         '<div id="gmr-graph"></div>',
-        _build_slider_panel(N),
+        _build_slider_panel(N_total, web_step),
         _build_frame_slider_js(frame_data_json),
         "</body>",
         "</html>",
@@ -558,7 +594,7 @@ def build_plotly_html(
     return "\n".join(html_parts)
 
 
-def _build_slider_panel(total_frames: int) -> str:
+def _build_slider_panel(total_frames: int, step: int = 1) -> str:
     """HTML + CSS for the bottom control bar."""
     return f"""
 <div id="gmr-controls" style="
@@ -582,7 +618,7 @@ def _build_slider_panel(total_frames: int) -> str:
   ">&#9664;</button>
 
   <input type="range" id="gmr-slider" min="0" max="{total_frames - 1}"
-      value="0" step="1"
+      value="0" step="{step}"
       style="flex:1; min-width:200px; max-width:600px; accent-color:#ff7f0e;">
 
   <button id="gmr-next" title="Next frame (&rarr;)" style="
@@ -614,21 +650,31 @@ def _build_slider_panel(total_frames: int) -> str:
 
 
 def _build_frame_slider_js(frame_data_json: str) -> str:
-    """JavaScript – trivially simple: just call Plotly.react() with
-    pre-built trace arrays for the requested frame."""
+    """JavaScript – slider value = original frame index; trace lookup via
+    downsampling step to keep Panel A ↔ Panel B in sync."""
     return f"""
 <script>
 (function() {{
   var FD = {frame_data_json};
-  var N = FD.totalFrames;
+  var N_total = FD.totalFrames;     // original frame count (slider range)
+  var webStep = FD.webStep || 1;    // downsampling step
+  var N_traces = FD.frames.length;  // downsampled trace count
   var fps = FD.fps || 30;
-  var current = 0;
+  var current = 0;                  // original frame index (slider value)
   var playing = false;
   var speed = 1.0;
   var animId = null;
   var lastTime = 0;
 
   var $ = function(id) {{ return document.getElementById(id); }};
+
+  // Map original frame index → trace index in the downsampled array.
+  function _traceIdx(origIdx) {{
+    var ti = Math.round(origIdx / webStep);
+    if (ti < 0) ti = 0;
+    if (ti >= N_traces) ti = N_traces - 1;
+    return ti;
+  }}
 
   // Notify MuJoCo viewer of frame change (best-effort, fire-and-forget)
   function _notifyMujoco(frame) {{
@@ -638,12 +684,17 @@ def _build_frame_slider_js(frame_data_json: str) -> str:
   }}
 
   function updateFrame(idx) {{
+    // idx is the ORIGINAL frame index (slider value)
     if (idx < 0) idx = 0;
-    if (idx >= N) idx = N - 1;
+    if (idx >= N_total) idx = N_total - 1;
+    // Snap to nearest downsampled frame
+    idx = Math.round(idx / webStep) * webStep;
+    if (idx >= N_total) idx = N_total - 1;
     current = idx;
-    Plotly.react('gmr-graph', FD.frames[idx], FD.layout);
+    var ti = _traceIdx(current);
+    Plotly.react('gmr-graph', FD.frames[ti], FD.layout);
     $('gmr-slider').value = current;
-    $('gmr-counter').textContent = (current + 1) + ' / ' + N;
+    $('gmr-counter').textContent = (current + 1) + ' / ' + N_total;
     _notifyMujoco(current);
   }}
 
@@ -656,7 +707,7 @@ def _build_frame_slider_js(frame_data_json: str) -> str:
       if (advance < 1) advance = 1;
       if (advance > 10) advance = 10;
       var nxt = current + advance;
-      if (nxt >= N) nxt = 0;
+      if (nxt >= N_total) nxt = 0;
       updateFrame(nxt);
       lastTime = ts;
     }}
@@ -678,17 +729,17 @@ def _build_frame_slider_js(frame_data_json: str) -> str:
     updateFrame(+this.value);
   }});
   $('gmr-play').addEventListener('click', togglePlay);
-  $('gmr-prev').addEventListener('click', function() {{ updateFrame(current - 1); }});
-  $('gmr-next').addEventListener('click', function() {{ updateFrame(current + 1); }});
+  $('gmr-prev').addEventListener('click', function() {{ updateFrame(current - webStep); }});
+  $('gmr-next').addEventListener('click', function() {{ updateFrame(current + webStep); }});
   $('gmr-speed').addEventListener('change', function() {{ speed = +this.value; }});
 
   window.addEventListener('keydown', function(e) {{
     var handled = true;
     switch (e.key) {{
-      case 'ArrowLeft':  updateFrame(current - 1); break;
-      case 'ArrowRight': updateFrame(current + 1); break;
-      case 'ArrowUp':    updateFrame(current + 10); break;
-      case 'ArrowDown':  updateFrame(current - 10); break;
+      case 'ArrowLeft':  updateFrame(current - webStep); break;
+      case 'ArrowRight': updateFrame(current + webStep); break;
+      case 'ArrowUp':    updateFrame(current + 10 * webStep); break;
+      case 'ArrowDown':  updateFrame(current - 10 * webStep); break;
       case ' ': case 'Spacebar':
         togglePlay(); e.preventDefault(); break;
       case '1': $('gmr-speed').value = '0.25'; speed = 0.25; break;
@@ -1087,6 +1138,10 @@ def main():
                     help="Last BVH frame to process (exclusive)")
     ap.add_argument("--max-frames", type=int, default=None,
                     help="Limit total frames processed (for quick preview)")
+    ap.add_argument("--max-web-frames", type=int, default=800,
+                    help="Max frames embedded in Panel A HTML. "
+                         "Data is downsampled when exceeding this limit "
+                         "(default: 800, set 0 to disable).")
 
     ap.add_argument("--no-panel-a", action="store_true",
                     help="Skip the plotly HTML links view")
@@ -1097,6 +1152,9 @@ def main():
 
     ap.add_argument("--human-height", type=float, default=None,
                     help="Actual human height in meters (auto-detected if omitted)")
+    ap.add_argument("--bvh-scale", type=float, default=0.01,
+                    help="BVH unit to meter scale factor. "
+                         "Default: 0.01 (cm→m). Use 1.0 if BVH is already in meters.")
 
     ap.add_argument("--save", type=str, default=None, metavar="PATH",
                     help="Save retargeting results to .pkl file (skip this step next time)")
@@ -1127,6 +1185,7 @@ def main():
         bvh_path,
         start=args.start,
         end=args.end,
+        scale=args.bvh_scale,
     )
     motion_fps = int(1.0 / frame_time) if frame_time > 0 else 30
     print(f"  {len(human_frames)} frames, "
@@ -1248,12 +1307,14 @@ def main():
 
         # Build HTML with placeholder port – we'll fill it in after the
         # sync server starts (so we only build the heavy traces ONCE).
+        max_wf = args.max_web_frames if args.max_web_frames > 0 else 10**9
         html = build_plotly_html(
             all_frame_data, robot_edges, human_edges,
             robot_mapped, human_mapped,
             title=title,
             motion_fps=float(motion_fps),
             sync_port=0,
+            max_web_frames=max_wf,
         )
 
         # Start the sync HTTP server if Panel B is also active

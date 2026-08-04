@@ -97,7 +97,7 @@
       <geom name="base_visual" type="mesh" mesh="base_link" class="visual_geom"/>
       <geom name="base_collision" type="mesh" mesh="base_link" class="collision_geom"/>
       <site name="imu_in_pelvis" size="0.01" pos="0 0 0"/>
-      <body name="aux_base" pos="0.03 0 -0.065">
+      <body name="aux_base" pos="0.01 0 -0.02">
         <inertial pos="0 0 0" mass="0.000001" diaginertia="0.000000001 0.000000001 0.000000001"/>
       </body>
 
@@ -112,7 +112,7 @@
         <joint name="waist_yaw_joint" pos="0 0 0" axis="0 0 1" range="-2.61 2.61" class="85S_joint_param"/>
         <geom name="waist_yaw_visual" type="mesh" mesh="waist_yaw_link" class="visual_geom"/>
         <geom name="waist_yaw_collision" type="mesh" mesh="waist_yaw_link" class="collision_geom"/>
-        <body name="aux_L5" pos="0 0 -0.01">
+        <body name="aux_L5" pos="0 0 0.025">
           <inertial pos="0 0 0" mass="0.000001" diaginertia="0.000000001 0.000000001 0.000000001"/>
         </body>
         <body name="waist_roll_link" pos="0 0 0.0615">
@@ -133,13 +133,13 @@
               <site name="imu_in_torso" size="0.01" pos="0 0 0"/>
             </body>
 
-            <body name="aux_L3" pos="0 0 0.035">
+            <body name="aux_L3" pos="0 0 0.04">
               <inertial pos="0 0 0" mass="0.000001" diaginertia="0.000000001 0.000000001 0.000000001"/>
             </body>
             <body name="aux_T12" pos="0 0 0.135">
               <inertial pos="0 0 0" mass="0.000001" diaginertia="0.000000001 0.000000001 0.000000001"/>
             </body>
-            <body name="aux_T8" pos="0 0 0.23">
+            <body name="aux_T8" pos="0 0 0.21">
               <inertial pos="0 0 0" mass="0.000001" diaginertia="0.000000001 0.000000001 0.000000001"/>
             </body>
 
@@ -152,7 +152,7 @@
               </body>
             </body>
 
-            <body name="aux_left_collar" pos="0 0.041 0.33">
+            <body name="aux_left_collar" pos="0 0.021 0.305">
               <inertial pos="0 0 0" mass="0.000001" diaginertia="0.000000001 0.000000001 0.000000001"/>
             </body>
 
@@ -207,7 +207,7 @@
               </body>
             </body>
 
-            <body name="aux_right_collar" pos="0 -0.041 0.33">
+            <body name="aux_right_collar" pos="0 -0.021 0.305">
               <inertial pos="0 0 0" mass="0.000001" diaginertia="0.000000001 0.000000001 0.000000001"/>
             </body>
 
@@ -284,7 +284,7 @@
               <inertial pos="0.0215718 -0.0636838 -0.186548" quat="0.67794 0.00860776 0.00811426 0.735022" mass="4.65741" diaginertia="0.0650497 0.0641499 0.0100515"/>
               <joint name="left_knee_pitch_joint" pos="0 0 0" axis="0 1 0" range="-0.139 2.42" class="85B_joint_param"/>
               <geom name="left_knee_pitch_visual" type="mesh" mesh="left_knee_pitch_link" class="visual_geom"/>
-              <body name="aux_left_knee" pos="0.01 -0.06 0">
+              <body name="aux_left_knee" pos="0.07 -0.06 0">
                 <inertial pos="0 0 0" mass="0.000001" diaginertia="0.000000001 0.000000001 0.000000001"/>
               </body>
               <geom name="left_knee_pitch_collision" type="mesh" mesh="left_knee_pitch_link" class="collision_geom"/>
@@ -298,10 +298,10 @@
                   <joint name="left_ankle_roll_joint" pos="0 0 0" axis="1 0 0" range="-0.43 0.43" class="60A_joint_param"/>
                   <geom name="left_ankle_roll_visual" type="mesh" mesh="left_ankle_roll_link" class="visual_geom"/>
                   <geom name="left_ankle_roll_collision" type="mesh" mesh="left_ankle_roll_link" class="collision_geom"/>
-                  <body name="aux_left_toe_base" pos="0.11 0.0 -0.06">
+                  <body name="aux_left_toe_base" pos="0.18 0.0 -0.06">
                     <inertial pos="0 0 0" mass="0.000001" diaginertia="0.000000001 0.000000001 0.000000001"/>
                   </body>
-                  <body name="aux_left_ankle_end" pos="-0.05 0.0 0.0">
+                  <body name="aux_left_ankle_end" pos="0.01 0.0 0.0">
                     <inertial pos="0 0 0" mass="0.000001" diaginertia="0.000000001 0.000000001 0.000000001"/>
                   </body>
                 </body>
@@ -330,7 +330,7 @@
               <inertial pos="0.0215729 0.063744 -0.186542" quat="0.741278 0.00829367 0.00867002 0.67109" mass="4.65831" diaginertia="0.0650846 0.0641741 0.0100391"/>
               <joint name="right_knee_pitch_joint" pos="0 0 0" axis="0 1 0" range="-0.139 2.42" class="85B_joint_param"/>
               <geom name="right_knee_pitch_visual" type="mesh" mesh="right_knee_pitch_link" class="visual_geom"/>
-              <body name="aux_right_knee" pos="0.01 0.06 0">
+              <body name="aux_right_knee" pos="0.07 0.06 0">
                 <inertial pos="0 0 0" mass="0.000001" diaginertia="0.000000001 0.000000001 0.000000001"/>
               </body>
               <geom name="right_knee_pitch_collision" type="mesh" mesh="right_knee_pitch_link" class="collision_geom"/>
@@ -344,10 +344,10 @@
                   <joint name="right_ankle_roll_joint" pos="0 0 0" axis="1 0 0" range="-0.43 0.43" class="60A_joint_param"/>
                   <geom name="right_ankle_roll_visual" type="mesh" mesh="right_ankle_roll_link" class="visual_geom"/>
                   <geom name="right_ankle_roll_collision" type="mesh" mesh="right_ankle_roll_link" class="collision_geom"/>
-                  <body name="aux_right_toe_base" pos="0.11 0.0 -0.06">
+                  <body name="aux_right_toe_base" pos="0.18 0.0 -0.06">
                     <inertial pos="0 0 0" mass="0.000001" diaginertia="0.000000001 0.000000001 0.000000001"/>
                   </body>
-                  <body name="aux_right_ankle_end" pos="-0.05 0.0 0.0">
+                  <body name="aux_right_ankle_end" pos="0.01 0.0 0.0">
                     <inertial pos="0 0 0" mass="0.000001" diaginertia="0.000000001 0.000000001 0.000000001"/>
                   </body>
                 </body>
