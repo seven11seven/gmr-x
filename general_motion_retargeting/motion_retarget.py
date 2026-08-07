@@ -7,6 +7,90 @@ from scipy.spatial.transform import Rotation as R
 from .params import ROBOT_XML_DICT, IK_CONFIG_DICT
 from rich import print
 
+
+class FrameJointDamperTask:
+    """Piecewise L2 regularizer on per-frame joint displacement."""
+
+    def __init__(
+        self,
+        model: mj.MjModel,
+        deadband: float = 0.3,
+        high_threshold: float = 0.5,
+        mid_weight: float = 10.0,
+        high_weight: float = 1000.0,
+    ) -> None:
+        self.model = model
+        self.deadband = deadband
+        self.high_threshold = high_threshold
+        self.mid_weight = mid_weight
+        self.high_weight = high_weight
+        self.target_q = np.zeros(model.nq)
+        self.weights = np.zeros(model.nv)
+        self._regulated_v_ids = self._get_regulated_v_ids(model)
+        self._eye_nv = np.eye(model.nv)
+
+    @staticmethod
+    def _get_regulated_v_ids(model: mj.MjModel) -> np.ndarray:
+        v_ids = []
+        for joint_id in range(model.njnt):
+            joint_type = model.jnt_type[joint_id]
+            dof_adr = model.jnt_dofadr[joint_id]
+            if joint_type == mj.mjtJoint.mjJNT_HINGE:
+                v_ids.append(dof_adr)
+            elif joint_type == mj.mjtJoint.mjJNT_BALL:
+                v_ids.extend(range(dof_adr, dof_adr + 3))
+        return np.asarray(v_ids, dtype=int)
+
+    def set_target(self, target_q: np.ndarray) -> None:
+        self.target_q = target_q.copy()
+        self.weights.fill(0.0)
+
+    def _frame_error(self, qpos: np.ndarray) -> np.ndarray:
+        qvel = np.empty(self.model.nv)
+        mj.mj_differentiatePos(
+            m=self.model,
+            qvel=qvel,
+            dt=1.0,
+            qpos1=self.target_q,
+            qpos2=qpos,
+        )
+        return qvel
+
+    def weights_for_qpos(self, qpos: np.ndarray) -> np.ndarray:
+        weights = np.zeros(self.model.nv)
+        error = np.abs(self._frame_error(qpos))
+        regulated_error = error[self._regulated_v_ids]
+        regulated_weights = np.where(
+            regulated_error > self.high_threshold,
+            self.high_weight,
+            np.where(regulated_error > self.deadband, self.mid_weight, 0.0),
+        )
+        weights[self._regulated_v_ids] = regulated_weights
+        return weights
+
+    def set_weights_from_qpos(self, qpos: np.ndarray) -> None:
+        self.weights = self.weights_for_qpos(qpos)
+
+    def compute_error(self, configuration) -> np.ndarray:
+        # This is a regularizer, so keep it out of the IK convergence metric.
+        return np.zeros(configuration.nv)
+
+    def compute_jacobian(self, configuration) -> np.ndarray:
+        return self._eye_nv
+
+    def compute_qp_residual(self, configuration):
+        costs = np.sqrt(self.weights)
+        weighted_jacobian = costs[:, None] * self._eye_nv
+        weighted_error = costs * (-self._frame_error(configuration.data.qpos))
+        return weighted_jacobian, weighted_error, 0.0
+
+    def compute_qp_objective(self, configuration):
+        weighted_jacobian, weighted_error, _ = self.compute_qp_residual(configuration)
+        H = weighted_jacobian.T @ weighted_jacobian
+        c = -weighted_error @ weighted_jacobian
+        return H, c
+
+
 class GeneralMotionRetargeting:
     """General Motion Retargeting (GMR).
     """
@@ -20,6 +104,11 @@ class GeneralMotionRetargeting:
         verbose: bool=True,
         use_velocity_limit: bool=False,
         ik_config_path: str = None,
+        use_frame_joint_damper: bool=True,
+        frame_joint_damper_deadband: float=0.2,
+        frame_joint_damper_high_threshold: float=0.5,
+        frame_joint_damper_mid_weight: float=1000.0,
+        frame_joint_damper_high_weight: float=10000.0,
     ) -> None:
 
         # load the robot model
@@ -99,6 +188,11 @@ class GeneralMotionRetargeting:
 
         self.solver = solver
         self.damping = damping
+        self.use_frame_joint_damper = use_frame_joint_damper
+        self.frame_joint_damper_deadband = frame_joint_damper_deadband
+        self.frame_joint_damper_high_threshold = frame_joint_damper_high_threshold
+        self.frame_joint_damper_mid_weight = frame_joint_damper_mid_weight
+        self.frame_joint_damper_high_weight = frame_joint_damper_high_weight
 
         self.frame_to_task1 = {}
         self.frame_to_task2 = {}
@@ -161,6 +255,17 @@ class GeneralMotionRetargeting:
         self.damping_task = mink.DampingTask(self.model, cost=1.0)
         self.tasks1.append(self.damping_task)
         self.tasks2.append(self.damping_task)
+
+        self.frame_joint_damper_task = FrameJointDamperTask(
+            self.model,
+            deadband=self.frame_joint_damper_deadband,
+            high_threshold=self.frame_joint_damper_high_threshold,
+            mid_weight=self.frame_joint_damper_mid_weight,
+            high_weight=self.frame_joint_damper_high_weight,
+        )
+        if self.use_frame_joint_damper:
+            self.tasks1.append(self.frame_joint_damper_task)
+            self.tasks2.append(self.frame_joint_damper_task)
 
     def _build_frame_mappings(
         self, ik_match_table, frame_to_task, frame_to_bodies,
@@ -247,50 +352,85 @@ class GeneralMotionRetargeting:
     def retarget(self, human_data, offset_to_ground=False):
         # Update the task targets
         self.update_targets(human_data, offset_to_ground)
+        frame_start_qpos = self.configuration.data.qpos.copy()
+        if self.use_frame_joint_damper:
+            self.frame_joint_damper_task.set_target(frame_start_qpos)
 
         if self.use_ik_match_table1:
             # Solve the IK problem
             curr_error = self.error1()
             dt = self.configuration.model.opt.timestep
-            vel1 = mink.solve_ik(
-                self.configuration, self.tasks1, dt, self.solver, self.damping, self.ik_limits
-            )
-            self.configuration.integrate_inplace(vel1, dt)
+            self._solve_ik_step(self.tasks1, dt)
             next_error = self.error1()
             num_iter = 0
             while curr_error - next_error > 0.001 and num_iter < self.max_iter:
                 curr_error = next_error
                 dt = self.configuration.model.opt.timestep
-                vel1 = mink.solve_ik(
-                    self.configuration, self.tasks1, dt, self.solver, self.damping, self.ik_limits
-                )
-                self.configuration.integrate_inplace(vel1, dt)
+                self._solve_ik_step(self.tasks1, dt)
                 next_error = self.error1()
                 num_iter += 1
 
         if self.use_ik_match_table2:
             curr_error = self.error2()
             dt = self.configuration.model.opt.timestep
-            vel2 = mink.solve_ik(
-                self.configuration, self.tasks2, dt, self.solver, self.damping, self.ik_limits
-            )
-            self.configuration.integrate_inplace(vel2, dt)
+            self._solve_ik_step(self.tasks2, dt)
             next_error = self.error2()
             num_iter = 0
             while curr_error - next_error > 0.001 and num_iter < self.max_iter:
                 curr_error = next_error
                 # Solve the IK problem with the second task
                 dt = self.configuration.model.opt.timestep
-                vel2 = mink.solve_ik(
-                    self.configuration, self.tasks2, dt, self.solver, self.damping, self.ik_limits
-                )
-                self.configuration.integrate_inplace(vel2, dt)
+                self._solve_ik_step(self.tasks2, dt)
                 
                 next_error = self.error2()
                 num_iter += 1
                 
             
         return self.configuration.data.qpos.copy()
+
+
+    def _solve_ik_step(self, tasks, dt):
+        if not self.use_frame_joint_damper:
+            vel = mink.solve_ik(
+                self.configuration,
+                tasks,
+                dt,
+                self.solver,
+                damping=self.damping,
+                limits=self.ik_limits,
+            )
+            self.configuration.integrate_inplace(vel, dt)
+            return
+
+        self.frame_joint_damper_task.set_weights_from_qpos(self.configuration.data.qpos)
+        for _ in range(3):
+            vel = mink.solve_ik(
+                self.configuration,
+                tasks,
+                dt,
+                self.solver,
+                damping=self.damping,
+                limits=self.ik_limits,
+            )
+            proposed_qpos = self.configuration.integrate(vel, dt)
+            proposed_weights = np.maximum(
+                self.frame_joint_damper_task.weights,
+                self.frame_joint_damper_task.weights_for_qpos(proposed_qpos),
+            )
+            if np.array_equal(proposed_weights, self.frame_joint_damper_task.weights):
+                self.configuration.update(proposed_qpos)
+                return
+            self.frame_joint_damper_task.weights = proposed_weights
+
+        vel = mink.solve_ik(
+            self.configuration,
+            tasks,
+            dt,
+            self.solver,
+            damping=self.damping,
+            limits=self.ik_limits,
+        )
+        self.configuration.integrate_inplace(vel, dt)
 
 
     def error1(self):

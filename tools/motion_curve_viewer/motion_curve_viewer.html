@@ -101,6 +101,7 @@ body {
 .signal-toggles label.active-pos { background: #2a3f5f; color: #8ab4f8; }
 .signal-toggles label.active-vel { background: #3f2a2a; color: #f08c7a; }
 .signal-toggles label.active-acc { background: #2a3f3a; color: #6fc9a8; }
+.signal-toggles label.active-hist { background: #3a2a4f; color: #c4a0f0; }
 .signal-toggles input { display: none; }
 
 /* Variable tree */
@@ -263,6 +264,11 @@ body {
     <div class="ctrl-row">
       <label>FPS:</label>
       <input type="number" id="fps-input" value="120" min="1" max="1000" step="1">
+      <label>裁掉前</label>
+      <input type="number" id="trim-input" value="5" min="0" max="100" step="1" title="加载时跳过前N帧">
+      <label>帧</label>
+    </div>
+    <div class="ctrl-row">
       <button id="btn-load-sample" style="font-size:11px;padding:4px 8px;">加载示例</button>
     </div>
     <div class="quick-hint" id="quick-hint" style="display:none;">
@@ -283,6 +289,9 @@ body {
       </label>
       <label id="lbl-acc">
         <input type="checkbox" id="chk-acc"> Acceleration
+      </label>
+      <label id="lbl-hist">
+        <input type="checkbox" id="chk-hist"> 📊 速度直方图
       </label>
     </div>
   </div>
@@ -359,6 +368,9 @@ const STATE = {
   showPos: true,
   showVel: false,
   showAcc: false,
+  showHistogram: false,
+
+  trimFrames: 5,
 
   windowCount: 3,
   winlen: 300,
@@ -611,6 +623,7 @@ const domDropZone = $('#drop-zone');
 const domFileInput = $('#file-input');
 const domFileInfo = $('#file-info');
 const domFpsInput = $('#fps-input');
+const domTrimInput = $('#trim-input');
 const domVarTree = $('#var-tree');
 const domWindowsContainer = $('#windows-container');
 const domEmptyState = $('#empty-state');
@@ -626,15 +639,20 @@ const domQuickHint = $('#quick-hint');
 // Load Data
 // =========================================================================
 function loadCSVFromText(text, filename, fpsOverride) {
-  const { headers, data } = parseCSV(text);
+  let { headers, data } = parseCSV(text);
   if (data.length === 0) throw new Error('No valid data rows found');
+
+  // Apply trim
+  const trimN = parseInt(domTrimInput.value) || 0;
+  STATE.trimFrames = trimN;
+  const trimmedData = data.slice(Math.min(trimN, data.length));
 
   const fps = fpsOverride || parseFloat(domFpsInput.value) || 120;
 
-  const result = processData(headers, data, fps);
+  const result = processData(headers, trimmedData, fps);
 
   STATE.rawHeaders = headers;
-  STATE.rawData = data;
+  STATE.rawData = trimmedData;
   STATE.fps = fps;
   STATE.numFrames = result.numFrames;
   STATE.variables = result.variables;
@@ -649,7 +667,7 @@ function loadCSVFromText(text, filename, fpsOverride) {
 
   const dof = headers.length - 7;
   domFileInfo.style.display = 'block';
-  domFileInfo.textContent = `✓ ${filename || 'data.csv'} | ${result.numFrames} 帧 | ~${dof} DOF | ${fps} FPS`;
+  domFileInfo.textContent = `✓ ${filename || 'data.csv'} | ${result.numFrames} 帧 (裁掉${trimN}) | ~${dof} DOF | ${fps} FPS`;
 
   domQuickHint.style.display = 'block';
 
@@ -923,6 +941,26 @@ function buildTracesForVar(v, timeAxis) {
 }
 
 // =========================================================================
+// Build Histogram Traces for One Variable (velocity distribution)
+// =========================================================================
+function buildHistogramTracesForVar(v) {
+  const traces = [];
+  if (!STATE.velData[v.name]) return traces;
+
+  traces.push({
+    x: Array.from(STATE.velData[v.name]),
+    type: 'histogram',
+    name: v.name,
+    nbinsx: 60,
+    opacity: 0.65,
+    hovertemplate: `Velocity: %{x:.4f}<br>Count: %{y}<extra>${v.name}</extra>`,
+    legendgroup: v.name,
+  });
+
+  return traces;
+}
+
+// =========================================================================
 // Determine Y-axis label from variables in a window
 // =========================================================================
 function getYAxisLabel(winVars) {
@@ -981,9 +1019,10 @@ function renderAllWindows() {
     const varNames = winVars.map(v => v.name).join(', ') || '(空)';
     const badgeText = winVars.length > 0 ? `${winVars.length} 变量` : '';
 
+    const modeLabel = STATE.showHistogram ? ' 📊直方图' : '';
     card.innerHTML = `
       <div class="win-header" onclick="collapseWinCard(this)" title="点击折叠/展开">
-        <span class="win-title">Window ${w + 1}</span>
+        <span class="win-title">Window ${w + 1}${modeLabel}</span>
         <span class="win-badge">${badgeText}</span>
         <span class="win-vars">${varNames}</span>
         ${STATE.windowCount > 1 ? `<button class="win-remove" onclick="event.stopPropagation();removeWindow(${w})" title="移除此窗口">✕</button>` : ''}
@@ -994,44 +1033,81 @@ function renderAllWindows() {
 
     if (winVars.length === 0) continue;
 
-    // Build traces
-    const allTraces = [];
-    for (const v of winVars) {
-      allTraces.push(...buildTracesForVar(v, timeAxis));
+    // Build traces — branch on histogram vs time-series
+    let allTraces, layout;
+    const isHist = STATE.showHistogram;
+
+    if (isHist) {
+      allTraces = [];
+      for (const v of winVars) {
+        allTraces.push(...buildHistogramTracesForVar(v));
+      }
+      if (allTraces.length === 0) continue;
+
+      layout = {
+        margin: { l: 55, r: 20, t: 10, b: 40 },
+        showlegend: true,
+        barmode: 'overlay',
+        legend: {
+          orientation: 'h',
+          y: 1.12, x: 0,
+          font: { size: 10 },
+          traceorder: 'normal',
+          itemclick: 'toggle',
+          itemdoubleclick: 'toggleothers',
+        },
+        xaxis: {
+          title: { text: 'Velocity', font: { size: 11 } },
+          gridcolor: '#eee',
+          zeroline: true, zerolinecolor: '#ddd',
+        },
+        yaxis: {
+          title: { text: 'Count', font: { size: 11 } },
+          gridcolor: '#eee',
+        },
+        hovermode: 'closest',
+        dragmode: 'pan',
+        paper_bgcolor: '#fff',
+        plot_bgcolor: '#fafbfc',
+        autosize: true,
+      };
+    } else {
+      allTraces = [];
+      for (const v of winVars) {
+        allTraces.push(...buildTracesForVar(v, timeAxis));
+      }
+      if (allTraces.length === 0) continue;
+
+      const yLabel = getYAxisLabel(winVars);
+      layout = {
+        margin: { l: 55, r: 20, t: 10, b: 40 },
+        showlegend: true,
+        legend: {
+          orientation: 'h',
+          y: 1.12, x: 0,
+          font: { size: 10 },
+          traceorder: 'normal',
+          itemclick: 'toggle',
+          itemdoubleclick: 'toggleothers',
+        },
+        xaxis: {
+          title: { text: 'Frame', font: { size: 11 } },
+          range: [STATE.startFrame, STATE.startFrame + STATE.winlen],
+          gridcolor: '#eee',
+          zeroline: false,
+        },
+        yaxis: {
+          title: { text: yLabel, font: { size: 11 } },
+          gridcolor: '#eee',
+          zerolinecolor: '#ddd',
+        },
+        hovermode: 'closest',
+        dragmode: 'pan',
+        paper_bgcolor: '#fff',
+        plot_bgcolor: '#fafbfc',
+        autosize: true,
+      };
     }
-
-    if (allTraces.length === 0) continue;
-
-    const yLabel = getYAxisLabel(winVars);
-    const layout = {
-      margin: { l: 55, r: 20, t: 10, b: 40 },
-      showlegend: true,
-      legend: {
-        orientation: 'h',
-        y: 1.12,
-        x: 0,
-        font: { size: 10 },
-        traceorder: 'normal',
-        itemclick: 'toggle',
-        itemdoubleclick: 'toggleothers',
-      },
-      xaxis: {
-        title: { text: 'Frame', font: { size: 11 } },
-        range: [STATE.startFrame, STATE.startFrame + STATE.winlen],
-        gridcolor: '#eee',
-        zeroline: false,
-      },
-      yaxis: {
-        title: { text: yLabel, font: { size: 11 } },
-        gridcolor: '#eee',
-        zerolinecolor: '#ddd',
-      },
-      hovermode: 'closest',
-      dragmode: 'pan',
-      paper_bgcolor: '#fff',
-      plot_bgcolor: '#fafbfc',
-      autosize: true,
-    };
 
     const config = {
       responsive: true,
@@ -1088,6 +1164,7 @@ function removeWindow(winIdx) {
 // X-Axis Synchronization
 // =========================================================================
 function syncAllXAxes() {
+  if (STATE.showHistogram) return; // histograms don't have time axis
   const range = [STATE.startFrame, STATE.startFrame + STATE.winlen];
   for (let w = 0; w < STATE.windowCount; w++) {
     try {
@@ -1143,14 +1220,30 @@ function updateSignalToggles() {
   STATE.showPos = $('#chk-pos').checked;
   STATE.showVel = $('#chk-vel').checked;
   STATE.showAcc = $('#chk-acc').checked;
+  STATE.showHistogram = $('#chk-hist').checked;
 
-  $('#lbl-pos').classList.toggle('active-pos', STATE.showPos);
-  $('#lbl-vel').classList.toggle('active-vel', STATE.showVel);
-  $('#lbl-acc').classList.toggle('active-acc', STATE.showAcc);
+  $('#lbl-pos').classList.toggle('active-pos', STATE.showPos && !STATE.showHistogram);
+  $('#lbl-vel').classList.toggle('active-vel', STATE.showVel && !STATE.showHistogram);
+  $('#lbl-acc').classList.toggle('active-acc', STATE.showAcc && !STATE.showHistogram);
+  $('#lbl-hist').classList.toggle('active-hist', STATE.showHistogram);
+
+  // When histogram mode is on, disable the curve signal toggles visually
+  const curveLabels = ['#lbl-pos', '#lbl-vel', '#lbl-acc'];
+  curveLabels.forEach(sel => {
+    $(sel).style.opacity = STATE.showHistogram ? '0.4' : '1';
+  });
+
+  // Dim time-window controls in histogram mode (no time axis)
+  const timeControls = ['#winlen-slider','#winlen-num','#start-slider','#start-num',
+                        '#btn-prev','#btn-next','#btn-reset-zoom'];
+  timeControls.forEach(sel => {
+    const el = $(sel);
+    if (el) el.style.opacity = STATE.showHistogram ? '0.35' : '1';
+  });
 
   renderAllWindows();
 }
-['chk-pos','chk-vel','chk-acc'].forEach(id => {
+['chk-pos','chk-vel','chk-acc','chk-hist'].forEach(id => {
   $('#' + id).addEventListener('change', updateSignalToggles);
 });
 
