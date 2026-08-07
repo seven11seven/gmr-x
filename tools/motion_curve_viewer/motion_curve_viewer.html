@@ -1,0 +1,1238 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Motion Curve Viewer</title>
+<script src="https://cdn.plot.ly/plotly-2.32.0.min.js"></script>
+<style>
+/* ============================================================
+   CSS Reset & Variables
+   ============================================================ */
+:root {
+  --sidebar-w: 340px;
+  --bg-sidebar: #1c1c24;
+  --bg-main: #f0f2f5;
+  --bg-card: #ffffff;
+  --text-sidebar: #c8c8d4;
+  --text-sidebar-heading: #e8e8f0;
+  --text-main: #2c2c38;
+  --accent: #5b8def;
+  --accent2: #ef6c5b;
+  --accent3: #4caf93;
+  --border: #d8dae0;
+  --shadow: 0 1px 4px rgba(0,0,0,.08);
+  --radius: 8px;
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --font-mono: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+}
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; overflow: hidden; }
+body {
+  font-family: var(--font);
+  display: flex;
+  background: var(--bg-main);
+  color: var(--text-main);
+}
+
+/* Sidebar */
+#sidebar {
+  width: var(--sidebar-w);
+  min-width: var(--sidebar-w);
+  background: var(--bg-sidebar);
+  color: var(--text-sidebar);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  overflow-x: hidden;
+  z-index: 10;
+  box-shadow: 2px 0 8px rgba(0,0,0,.15);
+}
+#sidebar::-webkit-scrollbar { width: 5px; }
+#sidebar::-webkit-scrollbar-thumb { background: #444; border-radius: 3px; }
+
+.sidebar-section {
+  padding: 12px 16px;
+  border-bottom: 1px solid rgba(255,255,255,.06);
+}
+.sidebar-section h3 {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: .8px;
+  color: var(--text-sidebar-heading);
+  margin-bottom: 8px;
+  font-weight: 600;
+}
+
+/* File area */
+#drop-zone {
+  border: 2px dashed rgba(255,255,255,.15);
+  border-radius: var(--radius);
+  padding: 14px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color .2s, background .2s;
+  font-size: 13px; color: #888;
+}
+#drop-zone:hover, #drop-zone.dragover {
+  border-color: var(--accent);
+  background: rgba(91,141,239,.08); color: #bbb;
+}
+#file-info { font-size: 12px; margin-top: 6px; color: var(--accent3); display: none; }
+
+.ctrl-row {
+  display: flex; gap: 8px; align-items: center; margin-top: 8px;
+}
+.ctrl-row label { font-size: 12px; white-space: nowrap; }
+.ctrl-row input, .ctrl-row select {
+  background: #2a2a36; color: #ddd; border: 1px solid #3a3a4a;
+  border-radius: 4px; padding: 4px 8px; font-size: 12px; outline: none;
+}
+.ctrl-row input:focus { border-color: var(--accent); }
+.ctrl-row input[type=number] { width: 60px; }
+
+/* Signal toggles */
+.signal-toggles { display: flex; gap: 6px; margin-top: 4px; }
+.signal-toggles label {
+  font-size: 12px; cursor: pointer; display: flex; align-items: center; gap: 4px;
+  padding: 4px 10px; border-radius: 14px; background: #2a2a36;
+  transition: background .2s; user-select: none;
+}
+.signal-toggles label.active-pos { background: #2a3f5f; color: #8ab4f8; }
+.signal-toggles label.active-vel { background: #3f2a2a; color: #f08c7a; }
+.signal-toggles label.active-acc { background: #2a3f3a; color: #6fc9a8; }
+.signal-toggles input { display: none; }
+
+/* Variable tree */
+#var-tree { flex: 1; overflow-y: auto; padding: 4px 0; }
+#var-tree::-webkit-scrollbar { width: 5px; }
+#var-tree::-webkit-scrollbar-thumb { background: #444; border-radius: 3px; }
+
+.group-header {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 16px; cursor: pointer; user-select: none;
+  font-size: 13px; font-weight: 600; color: var(--text-sidebar-heading);
+  transition: background .15s;
+}
+.group-header:hover { background: rgba(255,255,255,.04); }
+.group-header .arrow { font-size: 10px; transition: transform .2s; width: 12px; text-align: center; }
+.group-header .arrow.open { transform: rotate(90deg); }
+.group-actions { margin-left: auto; display: flex; gap: 4px; }
+.group-actions button {
+  font-size: 10px; background: #333; color: #aaa; border: none;
+  border-radius: 3px; padding: 2px 6px; cursor: pointer;
+}
+.group-actions button:hover { background: #555; color: #fff; }
+.group-actions button.on { background: var(--accent); color: #fff; }
+
+.group-body { display: none; }
+.group-body.open { display: block; }
+
+.var-row {
+  display: flex; align-items: center; gap: 6px;
+  padding: 3px 16px 3px 32px; font-size: 12px;
+  transition: background .1s;
+}
+.var-row:hover { background: rgba(255,255,255,.03); }
+.var-row input[type=checkbox] { accent-color: var(--accent); cursor: pointer; }
+.var-row .var-name { flex: 1; font-family: var(--font-mono); font-size: 11px; cursor: pointer; }
+.var-row select {
+  font-size: 10px; background: #2a2a36; color: #aaa; border: 1px solid #3a3a4a;
+  border-radius: 3px; padding: 2px 4px; width: 52px; outline: none; cursor: pointer;
+}
+.var-row select:focus { border-color: var(--accent); }
+
+/* Main Area */
+#main {
+  flex: 1; display: flex; flex-direction: column;
+  overflow: hidden; min-width: 0;
+}
+
+/* Top bar */
+#topbar {
+  display: flex; align-items: center; gap: 12px;
+  padding: 8px 16px; background: var(--bg-card);
+  border-bottom: 1px solid var(--border);
+  box-shadow: var(--shadow);
+  flex-shrink: 0; z-index: 5; flex-wrap: wrap;
+}
+#topbar h2 { font-size: 16px; font-weight: 700; color: var(--text-main); margin-right: 8px; }
+#topbar label { font-size: 12px; color: #666; white-space: nowrap; }
+#topbar input[type=range] { width: 140px; }
+#topbar input[type=number] {
+  width: 64px; border: 1px solid var(--border); border-radius: 4px;
+  padding: 4px 6px; font-size: 12px; text-align: center;
+}
+#topbar button {
+  font-size: 11px; background: #eee; border: 1px solid var(--border);
+  border-radius: 4px; padding: 4px 10px; cursor: pointer;
+  transition: background .15s;
+}
+#topbar button:hover { background: #ddd; }
+#topbar button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+#topbar button.primary:hover { background: #4a7de0; }
+
+/* Windows container */
+#windows-container {
+  flex: 1; overflow-y: auto; padding: 12px;
+  display: flex; flex-direction: column; gap: 10px;
+}
+#windows-container::-webkit-scrollbar { width: 6px; }
+#windows-container::-webkit-scrollbar-thumb { background: #ccc; border-radius: 3px; }
+
+/* Window card */
+.win-card {
+  background: var(--bg-card); border-radius: var(--radius);
+  box-shadow: var(--shadow); display: flex; flex-direction: column;
+  overflow: hidden; min-height: 250px;
+}
+.win-card.empty { display: none; }
+.win-header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 12px; background: #fafafc;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer; user-select: none;
+}
+.win-header .win-title {
+  font-size: 13px; font-weight: 600; color: var(--text-main);
+}
+.win-header .win-badge {
+  font-size: 10px; background: var(--accent); color: #fff;
+  border-radius: 10px; padding: 1px 8px;
+}
+.win-header .win-badge:empty { display: none; }
+.win-header .win-vars {
+  font-size: 10px; color: #999; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; flex: 1;
+}
+.win-header .win-remove {
+  margin-left: auto; background: none; border: none; color: #bbb;
+  font-size: 18px; cursor: pointer; padding: 0 6px; line-height: 1;
+}
+.win-header .win-remove:hover { color: var(--accent2); }
+.win-plot {
+  flex: 1; min-height: 200px;
+}
+
+/* Collapse/expand window content */
+.win-card.collapsed .win-plot { display: none; }
+.win-card.collapsed { min-height: 0; }
+
+/* Empty state */
+.empty-state {
+  display: flex; align-items: center; justify-content: center;
+  height: 100%; color: #bbb; font-size: 14px;
+  flex-direction: column; gap: 8px;
+}
+.empty-state .icon { font-size: 48px; opacity: .4; }
+
+/* Quick-start hint */
+.quick-hint {
+  font-size: 11px; color: #666; padding: 12px 16px;
+  line-height: 1.6;
+}
+.quick-hint kbd {
+  background: #e8e8ec; border: 1px solid #ccc;
+  border-radius: 3px; padding: 1px 5px; font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+/* Responsive */
+@media (max-width: 800px) {
+  body { flex-direction: column; }
+  #sidebar { width: 100%; min-width: 100%; max-height: 40vh; }
+  #main { height: 60vh; }
+}
+</style>
+</head>
+<body>
+
+<!-- ============================================================
+     Sidebar
+     ============================================================ -->
+<div id="sidebar">
+
+  <!-- File Section -->
+  <div class="sidebar-section">
+    <h3>📂 数据文件</h3>
+    <div id="drop-zone">
+      📁 拖放 CSV 文件到此处<br>或点击选择文件
+      <input type="file" id="file-input" accept=".csv" style="display:none">
+    </div>
+    <div id="file-info"></div>
+    <div class="ctrl-row">
+      <label>FPS:</label>
+      <input type="number" id="fps-input" value="120" min="1" max="1000" step="1">
+      <button id="btn-load-sample" style="font-size:11px;padding:4px 8px;">加载示例</button>
+    </div>
+    <div class="quick-hint" id="quick-hint" style="display:none;">
+      💡 提示：<kbd>←</kbd><kbd>→</kbd> 移动窗口 &nbsp;
+      <kbd>Home</kbd><kbd>End</kbd> 跳转首尾
+    </div>
+  </div>
+
+  <!-- Signal Type Section -->
+  <div class="sidebar-section">
+    <h3>📈 信号类型</h3>
+    <div class="signal-toggles" id="signal-toggles">
+      <label class="active-pos" id="lbl-pos">
+        <input type="checkbox" id="chk-pos" checked> Position
+      </label>
+      <label id="lbl-vel">
+        <input type="checkbox" id="chk-vel"> Velocity
+      </label>
+      <label id="lbl-acc">
+        <input type="checkbox" id="chk-acc"> Acceleration
+      </label>
+    </div>
+  </div>
+
+  <!-- Variable Tree -->
+  <div class="sidebar-section" style="flex:1;display:flex;flex-direction:column;padding-bottom:8px;">
+    <h3>🔧 变量列表 <span style="font-weight:400;font-size:10px;color:#888;">（勾选 + 分配窗口）</span></h3>
+    <div id="var-tree"></div>
+  </div>
+
+  <!-- Window Management -->
+  <div class="sidebar-section">
+    <h3>🪟 窗口管理</h3>
+    <div class="ctrl-row">
+      <button id="btn-add-win" style="font-size:11px;padding:4px 10px;">+ 添加窗口</button>
+      <button id="btn-auto-assign" style="font-size:11px;padding:4px 10px;">自动分配</button>
+      <span id="win-count" style="font-size:11px;color:#888;margin-left:auto;"></span>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================
+     Main Area
+     ============================================================ -->
+<div id="main">
+  <!-- Top bar -->
+  <div id="topbar">
+    <h2>📊 Motion Curve Viewer</h2>
+
+    <label>窗口长度:</label>
+    <input type="range" id="winlen-slider" min="20" max="2000" value="300" step="10">
+    <input type="number" id="winlen-num" value="300" min="10" max="5000" step="10">
+
+    <label>起始帧:</label>
+    <input type="range" id="start-slider" min="0" max="0" value="0" step="1">
+    <input type="number" id="start-num" value="0" min="0" max="0" step="1">
+
+    <span id="range-info" style="font-size:11px;color:#888;"></span>
+
+    <button id="btn-prev" title="上一页">◀</button>
+    <button id="btn-next" title="下一页">▶</button>
+
+    <button id="btn-reset-zoom" style="margin-left:auto;">↺ 重置缩放</button>
+  </div>
+
+  <!-- Plot windows container -->
+  <div id="windows-container">
+    <div class="empty-state" id="empty-state">
+      <div class="icon">📁</div>
+      <div>请加载 CSV 文件以开始可视化</div>
+      <div style="font-size:12px;color:#aaa;">支持 D20 29/25 DOF 运动数据格式</div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================
+     JavaScript
+     ============================================================ -->
+<script>
+// =========================================================================
+// Global State
+// =========================================================================
+const STATE = {
+  rawHeaders: [],
+  rawData: null,
+  fps: 120,
+  numFrames: 0,
+
+  variables: [],       // [{name, group, groupKey, defaultWin, enabled, window, derived}]
+  posData: {},         // name → Float64Array
+  velData: {},
+  accData: {},
+
+  showPos: true,
+  showVel: false,
+  showAcc: false,
+
+  windowCount: 3,
+  winlen: 300,
+  startFrame: 0,
+
+  // Track which windows have been initialized with Plotly
+  plotInitialized: {},  // winIdx → true
+};
+
+// =========================================================================
+// Variable Group Definitions
+// =========================================================================
+const VAR_GROUPS = [
+  {
+    name: 'Base Position',
+    key: 'base_pos',
+    columns: ['base_x', 'base_y', 'base_z'],
+    yAxisLabel: 'Position (m)',
+    defaultWin: 1,
+  },
+  {
+    name: 'Base Rotation (Euler)',
+    key: 'base_rot',
+    columns: ['base_roll', 'base_pitch', 'base_yaw'],
+    derived: true,
+    yAxisLabel: 'Angle (rad)',
+    defaultWin: 1,
+  },
+  {
+    name: 'Waist',
+    key: 'waist',
+    columns: ['waist_yaw', 'waist_roll', 'waist_pitch'],
+    yAxisLabel: 'Angle (rad)',
+    defaultWin: 2,
+  },
+  {
+    name: 'Left Arm',
+    key: 'left_arm',
+    columns: ['L_shoulder_pitch','L_shoulder_roll','L_shoulder_yaw',
+              'L_elbow_pitch','L_wrist_roll','L_wrist_pitch','L_wrist_yaw'],
+    yAxisLabel: 'Angle (rad)',
+    defaultWin: 2,
+  },
+  {
+    name: 'Right Arm',
+    key: 'right_arm',
+    columns: ['R_shoulder_pitch','R_shoulder_roll','R_shoulder_yaw',
+              'R_elbow_pitch','R_wrist_roll','R_wrist_pitch','R_wrist_yaw'],
+    yAxisLabel: 'Angle (rad)',
+    defaultWin: 2,
+  },
+  {
+    name: 'Left Leg',
+    key: 'left_leg',
+    columns: ['L_hip_pitch','L_hip_roll','L_hip_yaw',
+              'L_knee_pitch','L_ankle_pitch','L_ankle_roll'],
+    yAxisLabel: 'Angle (rad)',
+    defaultWin: 3,
+  },
+  {
+    name: 'Right Leg',
+    key: 'right_leg',
+    columns: ['R_hip_pitch','R_hip_roll','R_hip_yaw',
+              'R_knee_pitch','R_ankle_pitch','R_ankle_roll'],
+    yAxisLabel: 'Angle (rad)',
+    defaultWin: 3,
+  },
+];
+
+// =========================================================================
+// Quaternion (xyzw) → Euler (roll, pitch, yaw)
+// =========================================================================
+function quatToEuler(qx, qy, qz, qw) {
+  const sinr_cosp = 2.0 * (qw * qx + qy * qz);
+  const cosr_cosp = 1.0 - 2.0 * (qx * qx + qy * qy);
+  const roll = Math.atan2(sinr_cosp, cosr_cosp);
+
+  const sinp = 2.0 * (qw * qy - qz * qx);
+  let pitch;
+  if (Math.abs(sinp) >= 1.0) {
+    pitch = Math.sign(sinp) * Math.PI / 2.0;
+  } else {
+    pitch = Math.asin(sinp);
+  }
+
+  const siny_cosp = 2.0 * (qw * qz + qx * qy);
+  const cosy_cosp = 1.0 - 2.0 * (qy * qy + qz * qz);
+  const yaw = Math.atan2(siny_cosp, cosy_cosp);
+
+  return [roll, pitch, yaw];
+}
+
+// =========================================================================
+// Finite Difference (central diff interior, forward/back at edges)
+// =========================================================================
+function finiteDiff(data, dt) {
+  const n = data.length;
+  const out = new Float64Array(n);
+  if (n < 2) return out;
+  const inv2dt = 1.0 / (2.0 * dt);
+  const invdt = 1.0 / dt;
+  out[0] = (data[1] - data[0]) * invdt;
+  for (let i = 1; i < n - 1; i++) {
+    out[i] = (data[i + 1] - data[i - 1]) * inv2dt;
+  }
+  out[n - 1] = (data[n - 1] - data[n - 2]) * invdt;
+  return out;
+}
+
+// =========================================================================
+// CSV Parsing
+// =========================================================================
+function parseCSV(text) {
+  const lines = text.trim().split(/\r?\n/);
+  if (lines.length < 2) throw new Error('CSV must have header + at least 1 data row');
+
+  const headers = lines[0].split(',').map(h => h.trim());
+  const data = [];
+  for (let i = 1; i < lines.length; i++) {
+    const vals = lines[i].split(',').map(v => parseFloat(v.trim()));
+    if (vals.length === headers.length && vals.every(v => !isNaN(v))) {
+      data.push(vals);
+    }
+  }
+  return { headers, data };
+}
+
+// =========================================================================
+// Data Processing Pipeline
+// =========================================================================
+function processData(headers, data, fps) {
+  const numFrames = data.length;
+
+  // header → column index map
+  const colMap = {};
+  headers.forEach((h, i) => { colMap[h] = i; });
+
+  const variables = [];
+  const posData = {};
+  const dt = 1.0 / fps;
+
+  // Track which columns are consumed by known groups
+  const consumedCols = new Set();
+
+  for (const group of VAR_GROUPS) {
+    for (const colName of group.columns) {
+      let rawValues;
+
+      if (group.derived && colName.startsWith('base_')) {
+        // Derived Euler angles from quaternion
+        const qxIdx = colMap['base_qx'];
+        const qyIdx = colMap['base_qy'];
+        const qzIdx = colMap['base_qz'];
+        const qwIdx = colMap['base_qw'];
+        if (qxIdx === undefined) continue;
+
+        consumedCols.add('base_qx');
+        consumedCols.add('base_qy');
+        consumedCols.add('base_qz');
+        consumedCols.add('base_qw');
+
+        rawValues = new Float64Array(numFrames);
+        for (let f = 0; f < numFrames; f++) {
+          const [roll, pitch, yaw] = quatToEuler(
+            data[f][qxIdx], data[f][qyIdx], data[f][qzIdx], data[f][qwIdx]
+          );
+          if (colName === 'base_roll')  rawValues[f] = roll;
+          if (colName === 'base_pitch') rawValues[f] = pitch;
+          if (colName === 'base_yaw')   rawValues[f] = yaw;
+        }
+      } else {
+        // Direct column lookup
+        const colIdx = colMap[colName];
+        if (colIdx === undefined) continue; // e.g. wrist_pitch missing in 25dof
+        consumedCols.add(colName);
+
+        rawValues = new Float64Array(numFrames);
+        for (let f = 0; f < numFrames; f++) {
+          rawValues[f] = data[f][colIdx];
+        }
+      }
+
+      if (!rawValues) continue;
+
+      posData[colName] = rawValues;
+      variables.push({
+        name: colName,
+        group: group.name,
+        groupKey: group.key,
+        yAxisLabel: group.yAxisLabel || '',
+        defaultWin: group.defaultWin,
+        enabled: true,
+        window: group.defaultWin - 1, // 0-indexed
+        derived: !!group.derived,
+      });
+    }
+  }
+
+  // Capture unmatched columns in an "Other" group
+  const otherCols = [];
+  for (const h of headers) {
+    if (!consumedCols.has(h)) {
+      otherCols.push(h);
+    }
+  }
+  if (otherCols.length > 0) {
+    for (const colName of otherCols) {
+      const colIdx = colMap[colName];
+      const rawValues = new Float64Array(numFrames);
+      for (let f = 0; f < numFrames; f++) {
+        rawValues[f] = data[f][colIdx];
+      }
+      posData[colName] = rawValues;
+      variables.push({
+        name: colName,
+        group: 'Other',
+        groupKey: 'other',
+        yAxisLabel: '',
+        defaultWin: 4,
+        enabled: false, // disabled by default for unrecognized columns
+        window: 3,      // window 4 (0-indexed: 3), or last window
+        derived: false,
+      });
+    }
+  }
+
+  // Compute velocity and acceleration
+  const velData = {};
+  const accData = {};
+  for (const v of variables) {
+    velData[v.name] = finiteDiff(posData[v.name], dt);
+    accData[v.name] = finiteDiff(velData[v.name], dt);
+  }
+
+  // Adjust "Other" variables to fit in existing window count
+  const maxWin = 3; // default 4 windows
+  for (const v of variables) {
+    if (v.window >= maxWin) v.window = maxWin - 1;
+  }
+
+  return { variables, posData, velData, accData, numFrames };
+}
+
+// =========================================================================
+// DOM References
+// =========================================================================
+const $ = (sel) => document.querySelector(sel);
+
+const domDropZone = $('#drop-zone');
+const domFileInput = $('#file-input');
+const domFileInfo = $('#file-info');
+const domFpsInput = $('#fps-input');
+const domVarTree = $('#var-tree');
+const domWindowsContainer = $('#windows-container');
+const domEmptyState = $('#empty-state');
+const domWinlenSlider = $('#winlen-slider');
+const domWinlenNum = $('#winlen-num');
+const domStartSlider = $('#start-slider');
+const domStartNum = $('#start-num');
+const domRangeInfo = $('#range-info');
+const domWinCount = $('#win-count');
+const domQuickHint = $('#quick-hint');
+
+// =========================================================================
+// Load Data
+// =========================================================================
+function loadCSVFromText(text, filename, fpsOverride) {
+  const { headers, data } = parseCSV(text);
+  if (data.length === 0) throw new Error('No valid data rows found');
+
+  const fps = fpsOverride || parseFloat(domFpsInput.value) || 120;
+
+  const result = processData(headers, data, fps);
+
+  STATE.rawHeaders = headers;
+  STATE.rawData = data;
+  STATE.fps = fps;
+  STATE.numFrames = result.numFrames;
+  STATE.variables = result.variables;
+  STATE.posData = result.posData;
+  STATE.velData = result.velData;
+  STATE.accData = result.accData;
+  STATE.startFrame = 0;
+  STATE.winlen = Math.min(300, result.numFrames);
+  STATE.plotInitialized = {};
+
+  domFpsInput.value = fps;
+
+  const dof = headers.length - 7;
+  domFileInfo.style.display = 'block';
+  domFileInfo.textContent = `✓ ${filename || 'data.csv'} | ${result.numFrames} 帧 | ~${dof} DOF | ${fps} FPS`;
+
+  domQuickHint.style.display = 'block';
+
+  updateVarTree();
+  updateTopbarRange();
+  renderAllWindows();
+}
+
+function loadCSVFromFile(file) {
+  const reader = new FileReader();
+  reader.onload = (e) => {
+    try {
+      loadCSVFromText(e.target.result, file.name);
+    } catch (err) {
+      alert('解析 CSV 失败: ' + err.message);
+    }
+  };
+  reader.readAsText(file);
+}
+
+// =========================================================================
+// Sample Data Loader
+// =========================================================================
+async function loadSampleData() {
+  const btn = $('#btn-load-sample');
+  btn.textContent = '加载中...';
+  btn.disabled = true;
+  try {
+    // When opened as file://, fetch won't work → fallback to manual drag-drop
+    const resp = await fetch('../../outputs/d20_29dof/dance_1.csv');
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const text = await resp.text();
+    loadCSVFromText(text, 'dance_1.csv (29dof)');
+  } catch (e) {
+    alert('无法自动加载示例（需通过 HTTP 服务器打开本页面）。\n\n' +
+          '请使用以下方式之一：\n' +
+          '1. 拖放 CSV 文件到左侧面板\n' +
+          '2. 运行: python -m http.server 8000\n' +
+          '   然后访问: http://localhost:8000/GMR/tools/motion_curve_viewer/motion_curve_viewer.html');
+  } finally {
+    btn.textContent = '加载示例';
+    btn.disabled = false;
+  }
+}
+
+// =========================================================================
+// Variable Tree Rendering
+// =========================================================================
+function updateVarTree() {
+  const vars = STATE.variables;
+  if (vars.length === 0) {
+    domVarTree.innerHTML = '<div style="padding:16px;color:#666;font-size:12px;">加载数据后显示变量</div>';
+    return;
+  }
+
+  const grouped = {};
+  for (const v of vars) {
+    if (!grouped[v.group]) grouped[v.group] = [];
+    grouped[v.group].push(v);
+  }
+
+  // Preserve group order: known groups first, then "Other"
+  const groupOrder = [...VAR_GROUPS.map(g => g.name)];
+  if (grouped['Other']) groupOrder.push('Other');
+
+  let html = '';
+  for (const groupName of groupOrder) {
+    const gvars = grouped[groupName];
+    if (!gvars || gvars.length === 0) continue;
+
+    const groupDef = VAR_GROUPS.find(g => g.name === groupName) || { key: 'other' };
+    const enabledCount = gvars.filter(v => v.enabled).length;
+    const allEnabled = enabledCount === gvars.length;
+
+    html += `<div class="group-header" data-group="${groupDef.key}" onclick="toggleGroup(this)">
+      <span class="arrow open">▶</span>
+      <span>${groupName}</span>
+      <span style="font-size:10px;color:#888;">(${enabledCount}/${gvars.length})</span>
+      <span class="group-actions" onclick="event.stopPropagation()">
+        <button onclick="groupToggleAll('${groupDef.key}')" class="${allEnabled ? 'on' : ''}"
+                title="全选/取消">☑</button>`;
+
+    for (let wi = 0; wi < STATE.windowCount; wi++) {
+      html += `<button onclick="groupSetWindow('${groupDef.key}',${wi})"
+                title="分配到窗口${wi+1}">W${wi+1}</button>`;
+    }
+    html += `</span></div>`;
+    html += `<div class="group-body open" data-group="${groupDef.key}">`;
+
+    for (const v of gvars) {
+      const winOpts = [
+        '<option value="-1">—</option>',
+        ...Array.from({length: STATE.windowCount}, (_, i) =>
+          `<option value="${i}" ${v.window === i ? 'selected' : ''}>W${i + 1}</option>`
+        )
+      ].join('');
+
+      html += `
+        <div class="var-row">
+          <input type="checkbox" data-var="${v.name}" ${v.enabled ? 'checked' : ''}
+                 onchange="toggleVar('${v.name}', this.checked)">
+          <span class="var-name" title="${v.name}">${v.name}</span>
+          <select data-var-win="${v.name}" onchange="setVarWindow('${v.name}', parseInt(this.value))">
+            ${winOpts}
+          </select>
+        </div>`;
+    }
+    html += '</div>';
+  }
+
+  domVarTree.innerHTML = html;
+}
+
+function findVar(name) {
+  return STATE.variables.find(v => v.name === name);
+}
+
+function toggleGroup(header) {
+  const arrow = header.querySelector('.arrow');
+  const key = header.dataset.group;
+  const body = domVarTree.querySelector(`.group-body[data-group="${key}"]`);
+  if (body) {
+    const isOpen = body.classList.toggle('open');
+    arrow.classList.toggle('open', isOpen);
+  }
+}
+
+function toggleVar(name, checked) {
+  const v = findVar(name);
+  if (v) {
+    v.enabled = checked;
+    updateVarTree();
+    renderAllWindows();
+  }
+}
+
+function setVarWindow(name, winIdx) {
+  const v = findVar(name);
+  if (v) {
+    v.window = winIdx;
+    updateVarTree();
+    renderAllWindows();
+  }
+}
+
+function groupSetWindow(groupKey, winIdx) {
+  for (const v of STATE.variables) {
+    if (v.groupKey === groupKey) {
+      v.window = winIdx;
+    }
+  }
+  updateVarTree();
+  renderAllWindows();
+}
+
+function groupToggleAll(groupKey) {
+  const gvars = STATE.variables.filter(v => v.groupKey === groupKey);
+  if (gvars.length === 0) return;
+  const allEnabled = gvars.every(v => v.enabled);
+  for (const v of gvars) {
+    v.enabled = !allEnabled;
+  }
+  updateVarTree();
+  renderAllWindows();
+}
+
+// =========================================================================
+// Window Count Management
+// =========================================================================
+function updateWindowCount(count) {
+  STATE.windowCount = Math.max(1, Math.min(8, count));
+  domWinCount.textContent = `${STATE.windowCount} 个窗口`;
+
+  // Clamp variable window assignments
+  for (const v of STATE.variables) {
+    if (v.window >= STATE.windowCount) v.window = STATE.windowCount - 1;
+    if (v.window < 0) v.window = 0;
+  }
+
+  updateVarTree();
+  renderAllWindows();
+}
+
+function addWindow() {
+  updateWindowCount(STATE.windowCount + 1);
+}
+
+// =========================================================================
+// Auto Assign
+// =========================================================================
+function autoAssign() {
+  for (const v of STATE.variables) {
+    const dw = v.defaultWin - 1;
+    v.window = Math.min(dw, STATE.windowCount - 1);
+  }
+  updateVarTree();
+  renderAllWindows();
+}
+
+// =========================================================================
+// Topbar Controls
+// =========================================================================
+function updateTopbarRange() {
+  domWinlenSlider.value = STATE.winlen;
+  domWinlenNum.value = STATE.winlen;
+  domWinlenSlider.max = STATE.numFrames;
+
+  const maxStart = Math.max(0, STATE.numFrames - STATE.winlen);
+  domStartSlider.max = maxStart;
+  domStartSlider.value = Math.min(STATE.startFrame, maxStart);
+  domStartNum.max = maxStart;
+  domStartNum.value = Math.min(STATE.startFrame, maxStart);
+
+  const endFrame = Math.min(STATE.startFrame + STATE.winlen, STATE.numFrames);
+  domRangeInfo.textContent = `显示: ${STATE.startFrame}–${endFrame} / ${STATE.numFrames} 帧`;
+}
+
+function setTimeWindow(start, length) {
+  STATE.winlen = Math.max(20, Math.min(length, STATE.numFrames));
+  STATE.startFrame = Math.max(0, Math.min(start, STATE.numFrames - STATE.winlen));
+  updateTopbarRange();
+  syncAllXAxes();
+}
+
+// =========================================================================
+// Build Traces for One Variable
+// =========================================================================
+function buildTracesForVar(v, timeAxis) {
+  const traces = [];
+
+  if (STATE.showPos && STATE.posData[v.name]) {
+    traces.push({
+      x: timeAxis,
+      y: Array.from(STATE.posData[v.name]),
+      type: 'scatter',
+      mode: 'lines',
+      name: v.name,
+      line: { width: 1.5 },
+      hovertemplate: `%{y:.4f}<extra>${v.name}</extra>`,
+      legendgroup: v.name,
+    });
+  }
+
+  if (STATE.showVel && STATE.velData[v.name]) {
+    traces.push({
+      x: timeAxis,
+      y: Array.from(STATE.velData[v.name]),
+      type: 'scatter',
+      mode: 'lines',
+      name: v.name + ' vel',
+      line: { width: 1.2, dash: 'dash' },
+      hovertemplate: `%{y:.4f}<extra>${v.name} vel</extra>`,
+      legendgroup: v.name,
+    });
+  }
+
+  if (STATE.showAcc && STATE.accData[v.name]) {
+    traces.push({
+      x: timeAxis,
+      y: Array.from(STATE.accData[v.name]),
+      type: 'scatter',
+      mode: 'lines',
+      name: v.name + ' acc',
+      line: { width: 1.0, dash: 'dot' },
+      hovertemplate: `%{y:.4f}<extra>${v.name} acc</extra>`,
+      legendgroup: v.name,
+    });
+  }
+
+  return traces;
+}
+
+// =========================================================================
+// Determine Y-axis label from variables in a window
+// =========================================================================
+function getYAxisLabel(winVars) {
+  // Use the label from the first variable's group definition, or infer
+  if (winVars.length === 0) return '';
+  const firstVar = winVars[0];
+
+  if (STATE.showPos && !STATE.showVel && !STATE.showAcc) {
+    return firstVar.yAxisLabel || '';
+  }
+  if (STATE.showVel && !STATE.showPos && !STATE.showAcc) {
+    if (firstVar.yAxisLabel) {
+      return firstVar.yAxisLabel.replace('(m)', '(m/s)').replace('(rad)', '(rad/s)');
+    }
+    return 'Velocity';
+  }
+  if (STATE.showAcc && !STATE.showPos && !STATE.showVel) {
+    if (firstVar.yAxisLabel) {
+      return firstVar.yAxisLabel.replace('(m)', '(m/s²)').replace('(rad)', '(rad/s²)');
+    }
+    return 'Acceleration';
+  }
+  // Mixed → generic
+  return '';
+}
+
+// =========================================================================
+// Render All Windows
+// =========================================================================
+function renderAllWindows() {
+  const vars = STATE.variables;
+  if (vars.length === 0) {
+    domWindowsContainer.innerHTML = `
+      <div class="empty-state" id="empty-state">
+        <div class="icon">📁</div>
+        <div>请加载 CSV 文件以开始可视化</div>
+        <div style="font-size:12px;color:#aaa;">支持 D20 29/25 DOF 运动数据格式</div>
+      </div>`;
+    return;
+  }
+
+  domEmptyState.style.display = 'none';
+
+  const timeAxis = Array.from({length: STATE.numFrames}, (_, i) => i);
+
+  // Build window contents
+  domWindowsContainer.innerHTML = '';
+
+  for (let w = 0; w < STATE.windowCount; w++) {
+    const winVars = vars.filter(v => v.enabled && v.window === w);
+
+    const card = document.createElement('div');
+    card.className = 'win-card' + (winVars.length === 0 ? ' empty' : '');
+    card.dataset.win = w;
+
+    const varNames = winVars.map(v => v.name).join(', ') || '(空)';
+    const badgeText = winVars.length > 0 ? `${winVars.length} 变量` : '';
+
+    card.innerHTML = `
+      <div class="win-header" onclick="collapseWinCard(this)" title="点击折叠/展开">
+        <span class="win-title">Window ${w + 1}</span>
+        <span class="win-badge">${badgeText}</span>
+        <span class="win-vars">${varNames}</span>
+        ${STATE.windowCount > 1 ? `<button class="win-remove" onclick="event.stopPropagation();removeWindow(${w})" title="移除此窗口">✕</button>` : ''}
+      </div>
+      <div class="win-plot" id="win-plot-${w}"></div>
+    `;
+    domWindowsContainer.appendChild(card);
+
+    if (winVars.length === 0) continue;
+
+    // Build traces
+    const allTraces = [];
+    for (const v of winVars) {
+      allTraces.push(...buildTracesForVar(v, timeAxis));
+    }
+
+    if (allTraces.length === 0) continue;
+
+    const yLabel = getYAxisLabel(winVars);
+    const layout = {
+      margin: { l: 55, r: 20, t: 10, b: 40 },
+      showlegend: true,
+      legend: {
+        orientation: 'h',
+        y: 1.12,
+        x: 0,
+        font: { size: 10 },
+        traceorder: 'normal',
+        itemclick: 'toggle',
+        itemdoubleclick: 'toggleothers',
+      },
+      xaxis: {
+        title: { text: 'Frame', font: { size: 11 } },
+        range: [STATE.startFrame, STATE.startFrame + STATE.winlen],
+        gridcolor: '#eee',
+        zeroline: false,
+      },
+      yaxis: {
+        title: { text: yLabel, font: { size: 11 } },
+        gridcolor: '#eee',
+        zerolinecolor: '#ddd',
+      },
+      hovermode: 'closest',
+      dragmode: 'pan',
+      paper_bgcolor: '#fff',
+      plot_bgcolor: '#fafbfc',
+      autosize: true,
+    };
+
+    const config = {
+      responsive: true,
+      displayModeBar: true,
+      modeBarButtonsToRemove: ['lasso2d', 'select2d', 'autoScale2d'],
+      displaylogo: false,
+      scrollZoom: true,
+    };
+
+    const plotId = `win-plot-${w}`;
+    if (STATE.plotInitialized[w]) {
+      Plotly.react(plotId, allTraces, layout, config);
+    } else {
+      Plotly.newPlot(plotId, allTraces, layout, config);
+      STATE.plotInitialized[w] = true;
+    }
+  }
+
+  // Clean up removed windows
+  const validIds = new Set();
+  for (let w = 0; w < STATE.windowCount; w++) validIds.add(`win-plot-${w}`);
+  for (const id of Object.keys(STATE.plotInitialized)) {
+    if (!validIds.has(`win-plot-${id}`)) {
+      delete STATE.plotInitialized[id];
+    }
+  }
+
+  updateTopbarRange();
+}
+
+function collapseWinCard(header) {
+  const card = header.parentElement;
+  card.classList.toggle('collapsed');
+  // Resize Plotly after transition
+  const plotDiv = card.querySelector('.win-plot');
+  if (plotDiv && !card.classList.contains('collapsed')) {
+    setTimeout(() => {
+      try { Plotly.Plots.resize(plotDiv); } catch (e) {}
+    }, 50);
+  }
+}
+
+function removeWindow(winIdx) {
+  if (STATE.windowCount <= 1) return;
+  const targetWin = winIdx === 0 ? 1 : winIdx - 1;
+  for (const v of STATE.variables) {
+    if (v.window === winIdx) v.window = targetWin;
+    else if (v.window > winIdx) v.window -= 1;
+  }
+  updateWindowCount(STATE.windowCount - 1);
+}
+
+// =========================================================================
+// X-Axis Synchronization
+// =========================================================================
+function syncAllXAxes() {
+  const range = [STATE.startFrame, STATE.startFrame + STATE.winlen];
+  for (let w = 0; w < STATE.windowCount; w++) {
+    try {
+      Plotly.relayout(`win-plot-${w}`, { 'xaxis.range': range });
+    } catch (e) {
+      // plot may not exist yet
+    }
+  }
+}
+
+// =========================================================================
+// Event Handlers
+// =========================================================================
+
+// File drag & drop
+domDropZone.addEventListener('dragover', (e) => {
+  e.preventDefault();
+  domDropZone.classList.add('dragover');
+});
+domDropZone.addEventListener('dragleave', () => {
+  domDropZone.classList.remove('dragover');
+});
+domDropZone.addEventListener('drop', (e) => {
+  e.preventDefault();
+  domDropZone.classList.remove('dragover');
+  const file = e.dataTransfer.files[0];
+  if (file && (file.name.endsWith('.csv') || file.name.endsWith('.txt'))) {
+    loadCSVFromFile(file);
+  }
+});
+domDropZone.addEventListener('click', () => domFileInput.click());
+domFileInput.addEventListener('change', () => {
+  const file = domFileInput.files[0];
+  if (file) loadCSVFromFile(file);
+});
+
+// FPS change → recompute velocity & acceleration
+domFpsInput.addEventListener('change', () => {
+  const newFps = parseFloat(domFpsInput.value) || 120;
+  if (STATE.rawData && newFps > 0 && newFps !== STATE.fps) {
+    STATE.fps = newFps;
+    const dt = 1.0 / newFps;
+    for (const v of STATE.variables) {
+      STATE.velData[v.name] = finiteDiff(STATE.posData[v.name], dt);
+      STATE.accData[v.name] = finiteDiff(STATE.velData[v.name], dt);
+    }
+    renderAllWindows();
+  }
+});
+
+// Signal type toggles
+function updateSignalToggles() {
+  STATE.showPos = $('#chk-pos').checked;
+  STATE.showVel = $('#chk-vel').checked;
+  STATE.showAcc = $('#chk-acc').checked;
+
+  $('#lbl-pos').classList.toggle('active-pos', STATE.showPos);
+  $('#lbl-vel').classList.toggle('active-vel', STATE.showVel);
+  $('#lbl-acc').classList.toggle('active-acc', STATE.showAcc);
+
+  renderAllWindows();
+}
+['chk-pos','chk-vel','chk-acc'].forEach(id => {
+  $('#' + id).addEventListener('change', updateSignalToggles);
+});
+
+// Window length controls
+domWinlenSlider.addEventListener('input', () => {
+  const len = parseInt(domWinlenSlider.value);
+  domWinlenNum.value = len;
+  STATE.winlen = len;
+  if (STATE.startFrame + STATE.winlen > STATE.numFrames) {
+    STATE.startFrame = Math.max(0, STATE.numFrames - STATE.winlen);
+  }
+  updateTopbarRange();
+  syncAllXAxes();
+});
+domWinlenNum.addEventListener('change', () => {
+  const len = parseInt(domWinlenNum.value) || 300;
+  setTimeWindow(STATE.startFrame, len);
+});
+
+// Start frame controls
+domStartSlider.addEventListener('input', () => {
+  const start = parseInt(domStartSlider.value);
+  domStartNum.value = start;
+  STATE.startFrame = start;
+  updateTopbarRange();
+  syncAllXAxes();
+});
+domStartNum.addEventListener('change', () => {
+  const start = parseInt(domStartNum.value) || 0;
+  setTimeWindow(start, STATE.winlen);
+});
+
+// Navigation
+$('#btn-prev').addEventListener('click', () => {
+  setTimeWindow(STATE.startFrame - Math.floor(STATE.winlen * 0.8), STATE.winlen);
+});
+$('#btn-next').addEventListener('click', () => {
+  setTimeWindow(STATE.startFrame + Math.floor(STATE.winlen * 0.8), STATE.winlen);
+});
+$('#btn-reset-zoom').addEventListener('click', () => {
+  STATE.startFrame = 0;
+  STATE.winlen = Math.min(300, STATE.numFrames);
+  updateTopbarRange();
+  syncAllXAxes();
+});
+
+// Window management
+$('#btn-add-win').addEventListener('click', addWindow);
+$('#btn-auto-assign').addEventListener('click', autoAssign);
+$('#btn-load-sample').addEventListener('click', loadSampleData);
+
+// Keyboard shortcuts
+document.addEventListener('keydown', (e) => {
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT') return;
+  const step = Math.max(10, Math.floor(STATE.winlen * 0.25));
+  switch (e.key) {
+    case 'ArrowLeft':  setTimeWindow(STATE.startFrame - step, STATE.winlen); break;
+    case 'ArrowRight': setTimeWindow(STATE.startFrame + step, STATE.winlen); break;
+    case 'Home':       setTimeWindow(0, STATE.winlen); break;
+    case 'End':        setTimeWindow(Math.max(0, STATE.numFrames - STATE.winlen), STATE.winlen); break;
+    case 'PageUp':     setTimeWindow(STATE.startFrame - STATE.winlen, STATE.winlen); break;
+    case 'PageDown':   setTimeWindow(STATE.startFrame + STATE.winlen, STATE.winlen); break;
+  }
+});
+
+// Responsive resize
+let resizeTimeout;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimeout);
+  resizeTimeout = setTimeout(() => {
+    for (let w = 0; w < STATE.windowCount; w++) {
+      try { Plotly.Plots.resize(`win-plot-${w}`); } catch (e) {}
+    }
+  }, 200);
+});
+
+// =========================================================================
+// Initialization
+// =========================================================================
+updateTopbarRange();
+updateWindowCount(3);
+domVarTree.innerHTML = '<div style="padding:16px;color:#666;font-size:12px;">加载数据后显示变量</div>';
+</script>
+</body>
+</html>

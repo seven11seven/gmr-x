@@ -6,7 +6,7 @@
     "use_ik_match_table1": true,
     "use_ik_match_table2": false,
     "human_scale_table_vertical": {
-        "Hips": 1.05,
+        "Hips": 1.1,
 
         "Spine": 1.0,
         "Spine1": 1.0,
@@ -25,21 +25,21 @@
         "LeftHand": 1.05,
         "RightHand": 1.05,
 
-        "LeftUpLeg": 1.0,
-        "RightUpLeg": 1.0,
-        "LeftLeg": 1.0,
-        "RightLeg": 1.0,
+        "LeftUpLeg": 1.1,
+        "RightUpLeg": 1.1,
+        "LeftLeg": 1.1,
+        "RightLeg": 1.1,
     
-        "LeftFoot": 1.05,
-        "RightFoot": 1.05,
-        "LeftFootMod": 1.05,
-        "RightFootMod": 1.05,
-        "LeftToeBase": 1.05,
-        "RightToeBase": 1.05
+        "LeftFoot": 1.1,
+        "RightFoot": 1.1,
+        "LeftFootMod": 1.1,
+        "RightFootMod": 1.1,
+        "LeftToeBase": 1.1,
+        "RightToeBase": 1.1
     },
 
     "human_scale_table_horizontal": {
-        "Hips": 1.05,
+        "Hips": 1.1,
 
         "Spine": 1.0,
         "Spine1": 1.0,
@@ -58,41 +58,41 @@
         "LeftHand": 1.05,
         "RightHand": 1.05,
 
-        "LeftUpLeg": 1.0,
-        "RightUpLeg": 1.0,
-        "LeftLeg": 1.0,
-        "RightLeg": 1.0,
-    
-        "LeftFoot": 1.05,
-        "RightFoot": 1.05,
-        "LeftFootMod": 1.05,
-        "RightFootMod": 1.05,
-        "LeftToeBase": 1.05,
-        "RightToeBase": 1.05
+        "LeftUpLeg": 1.1,
+        "RightUpLeg": 1.1,
+        "LeftLeg": 1.1,
+        "RightLeg": 1.1,
+
+        "LeftFoot": 1.1,
+        "RightFoot": 1.1,
+        "LeftFootMod": 1.1,
+        "RightFootMod": 1.1,
+        "LeftToeBase": 1.1,
+        "RightToeBase": 1.1
     },
 
     "ik_match_table1": {
         "aux_base": [
             "Hips",
-            60, 10,
+            80, 50,
             [0.0, 0.0, 0.0],
             [1, 0, 0, 0]
         ],
         "aux_L5": [
             "Spine",
-            0, 1,
+            0, 10,
             [0.0, 0.0, 0.0],
             [1, 0, 0, 0]
         ],
         "aux_L3": [
             "Spine1",
-            0, 2,
+            0, 60,
             [0.0, 0.0, 0.0],
             [1, 0, 0, 0]
         ],
         "aux_T12": [
             "Spine2",
-            0, 50,
+            0, 10,
             [0.0, 0.0, 0.0],
             [1, 0, 0, 0]
         ],
