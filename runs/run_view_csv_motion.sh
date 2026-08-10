@@ -4,6 +4,6 @@
 #     --fps 120
 
 python tools/csv_mujoco_viewer/view_csv_motion.py \
-    outputs/d20_25dof/qt_tachi_21_jump_guard.csv \
+    outputs/d20_25dof/qt_dance_2.csv \
     --xml assets/D20_v2/D20.xml \
     --fps 120
