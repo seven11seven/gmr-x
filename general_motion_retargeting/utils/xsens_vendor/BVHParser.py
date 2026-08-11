@@ -45,12 +45,43 @@ pos_channelmap_inv = {
 }
 
 
-def euler_to_quat(euler):
-    """Convert Euler angles (in degrees) to quaternion(wxyz) in xyz order."""
-    # Convert degrees to radians
+def _axis_rotation_matrix(axis, angle):
+    c = np.cos(angle)
+    s = np.sin(angle)
+    if axis == "x":
+        return np.array([[1.0, 0.0, 0.0], [0.0, c, -s], [0.0, s, c]])
+    if axis == "y":
+        return np.array([[c, 0.0, s], [0.0, 1.0, 0.0], [-s, 0.0, c]])
+    if axis == "z":
+        return np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+    raise ValueError(f"Unsupported Euler axis: {axis}")
+
+
+def euler_to_quat(euler, order=None):
+    """Convert Euler angles (in degrees) to quaternion(wxyz).
+
+    When ``order`` is provided, ``euler`` must be in the same order as the BVH
+    rotation channels after axis remapping. BVH channel transforms are composed
+    in declaration order, so this path preserves files that use orders such as
+    ZYX or YXZ.
+
+    The default path keeps the legacy fixed-order conversion for callers that
+    still pass the old parser output. In that legacy format, ``euler`` is
+    ordered as ``[Z, X, Y]`` in the output coordinate frame and is converted
+    using the previous fixed ZYX assumption.
+    """
+    if order is not None:
+        if len(order) != 3:
+            raise ValueError(f"Euler order must have 3 axes, got: {order}")
+        mat = np.eye(3)
+        for axis, angle in zip(order.lower(), np.deg2rad(np.array(euler))):
+            mat = mat @ _axis_rotation_matrix(axis, angle)
+        return R.from_matrix(mat).as_quat(scalar_first=True)
+
     mujoco_euler_rad = np.deg2rad(np.array(euler))
-    # mujoco_euler_rad = euler
-    rot = R.from_euler("xyz", mujoco_euler_rad, degrees=False)
+    # Reorder from [Z, X, Y] (axis 0,1,2) to [Z, Y, X] for ZYX sequence
+    reordered = [mujoco_euler_rad[0], mujoco_euler_rad[2], mujoco_euler_rad[1]]
+    rot = R.from_euler("zyx", reordered, degrees=False)
     quat = rot.as_quat(scalar_first=True)
     return quat
 
@@ -158,6 +189,11 @@ class BVHParser:
         self.num_frames = 0
         self.channel_map = []  # 存储每个节点的通道索引
         self.axis_idx = [ordermap[ax] for ax in axis_order]
+        self.axis_names = "xyz"
+        self.bvh_to_output_axis = {
+            self.axis_names[bvh_idx]: self.axis_names[out_idx]
+            for out_idx, bvh_idx in enumerate(self.axis_idx)
+        }
         self.scale = scale
         self.r = 0.015
 
@@ -204,7 +240,7 @@ class BVHParser:
                 self.active = len(self.parents) - 1
                 self.channel_map.append((node, 0))
             elif self.line.startswith("OFFSET"):
-                parts = re.findall(r"[-+]?\d*\.\d+|[-+]?\d+\.\d*|[-+]?\d+", self.line)
+                parts = re.findall(r"[-+]?(?:\d*\.\d+|\d+\.\d*)(?:[eE][-+]?\d+)?|[-+]?\d+", self.line)
                 if len(parts) != 3:
                     raise ValueError(f"Invalid OFFSET format in self.line: {self.line}")
                 offset = [float(p) for p in parts]
@@ -271,7 +307,7 @@ class BVHParser:
                 print(f"MOTION frame time is {self.frame_time} s/frame")
             else:
                 # 解析帧数据
-                parts = re.findall(r"[-+]?\d*\.\d+|[-+]?\d+\.\d*|[-+]?\d+", self.line)
+                parts = re.findall(r"[-+]?(?:\d*\.\d+|\d+\.\d*)(?:[eE][-+]?\d+)?|[-+]?\d+", self.line)
                 frame_data = [float(p) for p in parts]
                 self.frames.append(frame_data)
         except Exception as e:
@@ -301,6 +337,8 @@ class BVHParser:
         # 初始化输出数组
         N = len(self.names)  # 关节数
         self.rotations = np.zeros((fnum, N, 3))  # 欧拉角
+        self.channel_rotations = np.zeros((fnum, N, 3))  # BVH channel-order angles
+        self.rotation_orders = ["xyz"] * N
         self.positions = np.array(self.offsets)[np.newaxis].repeat(
             fnum, axis=0
         )  # (fnum, N, 3)
@@ -324,6 +362,11 @@ class BVHParser:
                     # 转换为 MuJoCo 坐标系: BVH [X, Y, Z] -> MuJoCo [Z, X, Y]
                     mujoco_pos = [bvh_pos[i] * self.scale for i in self.axis_idx]
                     mujoco_rot = [bvh_rot[i] for i in self.axis_idx]
+                    self.channel_rotations[fi, node_idx] = data[3:6]
+                    self.rotation_orders[node_idx] = "".join(
+                        self.bvh_to_output_axis[rot_channelmap[c]]
+                        for c in rot_cha
+                    )
                     if node.name == "Hips":
                         self.positions[fi, node_idx] = mujoco_pos
                     self.rotations[fi, node_idx] = mujoco_rot
@@ -334,6 +377,11 @@ class BVHParser:
                     bvh_rot_idx = [ordermap[rot_channelmap[c]] for c in rot_cha]
                     bvh_rot = [data[0:3][i] for i in bvh_rot_idx]
                     mujoco_rot = [bvh_rot[i] for i in self.axis_idx]
+                    self.channel_rotations[fi, node_idx] = data[0:3]
+                    self.rotation_orders[node_idx] = "".join(
+                        self.bvh_to_output_axis[rot_channelmap[c]]
+                        for c in rot_cha
+                    )
                     self.rotations[fi, node_idx] = mujoco_rot
                 elif num_channels == 0:
                     # End Site: 旋转赋值为0
@@ -341,11 +389,27 @@ class BVHParser:
                 channel_idx += num_channels
         return self.rotations, self.positions
 
+    def rotations_to_quats(self, rotations=None):
+        if hasattr(self, "channel_rotations") and hasattr(self, "rotation_orders"):
+            return np.array(
+                [
+                    [
+                        euler_to_quat(rot, self.rotation_orders[joint_idx])
+                        for joint_idx, rot in enumerate(frame)
+                    ]
+                    for frame in self.channel_rotations
+                ]
+            )
+
+        if rotations is None:
+            rotations = self.rotations
+        return np.array(
+            [[euler_to_quat(rot) for rot in frame] for frame in rotations]
+        )
+
     def _MOTION_data_post_processing(self, rotations, positions, reset_to_zero):
         # 转换为四元数
-        quats = np.array(
-            [[euler_to_quat(rot) for rot in frame] for frame in rotations]
-        )  # (fnum, N, 4)
+        quats = self.rotations_to_quats(rotations)  # (fnum, N, 4)
 
         # 消除四元数翻转
         quats = remove_quat_discontinuities(quats)

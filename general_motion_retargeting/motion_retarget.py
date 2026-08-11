@@ -105,10 +105,10 @@ class GeneralMotionRetargeting:
         use_velocity_limit: bool=False,
         ik_config_path: str = None,
         use_frame_joint_damper: bool=True,
-        frame_joint_damper_deadband: float=0.2,
+        frame_joint_damper_deadband: float=0.17,
         frame_joint_damper_high_threshold: float=0.5,
-        frame_joint_damper_mid_weight: float=1000.0,
-        frame_joint_damper_high_weight: float=10000.0,
+        frame_joint_damper_mid_weight: float=10000.0,
+        frame_joint_damper_high_weight: float=100000.0,
     ) -> None:
 
         # load the robot model
@@ -332,9 +332,10 @@ class GeneralMotionRetargeting:
                                             self.human_scale_table_horizontal)
         human_data = self.offset_human_data(human_data, self.pos_offsets1, self.rot_offsets1)
         human_data = self.apply_ground_offset(human_data)
+        # Save pre-ground-offset data for display/visualization consistency
+        self.scaled_human_data = human_data
         if offset_to_ground:
             human_data = self.offset_human_data_to_ground(human_data)
-        self.scaled_human_data = human_data
 
         if self.use_ik_match_table1:
             for frame_name, body_entries in self.frame_to_bodies1.items():

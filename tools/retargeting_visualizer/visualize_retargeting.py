@@ -46,7 +46,6 @@ import mujoco.viewer as mjv
 
 from general_motion_retargeting.utils.xsens_vendor.BVHParser import (
     BVHParser,
-    euler_to_quat,
     quat_fk,
     remove_quat_discontinuities,
 )
@@ -154,8 +153,7 @@ def load_bvh_all_frames(
             reset_to_zero=reset_to_zero,
         )
 
-    quats = np.array([[euler_to_quat(rot) for rot in frame]
-                      for frame in rotations])
+    quats = parser.rotations_to_quats(rotations)
     quats = remove_quat_discontinuities(quats)
     global_quats, global_positions = quat_fk(
         quats, positions, np.array(parser.parents, dtype=int),
@@ -1267,12 +1265,8 @@ def main():
         used_label = "auto" if args.human_height is None else f"{args.human_height:.2f}"
         print("\n  Human height: detected=%.2fm  assumed(ik_config)=%.2fm  used=%s"
               % (actual_human_height, assumed_h, used_label))
-        print("  Scale ratio = %.4f  (1.0 = exact match with links_mapping proportions)"
+        print("  Scale ratio = %.4f  (auto-detected from BVH data)"
               % ratio)
-        if abs(ratio - 1.0) > 0.01:
-            print("  ! proportions differ from links_mapping tool by %.1f%%"
-                  % (abs(1.0 - ratio) * 100))
-            print("    -> use --human-height %.1f to match links_mapping" % assumed_h)
 
         retargeter = GMR(
             src_human="bvh_xsens",

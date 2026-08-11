@@ -115,15 +115,14 @@ def get_robot_body_edges(bodies):
 
 def load_bvh_first_frame(bvh_path, bvh_format="3DSM", scale=0.01):
     from general_motion_retargeting.utils.xsens_vendor.BVHParser import (
-        BVHParser, euler_to_quat, quat_fk, remove_quat_discontinuities,
+        BVHParser, quat_fk, remove_quat_discontinuities,
     )
     p = BVHParser("zxy", scale)
     with open(bvh_path, "r") as fh:
         content = fh.read()
     rotations, positions = p.parse(content, start=0, end=1,
                                    reset_to_zero=False)
-    quats = np.array([[euler_to_quat(rot) for rot in frame]
-                      for frame in rotations])
+    quats = p.rotations_to_quats(rotations)
     quats = remove_quat_discontinuities(quats)
     global_quats, global_positions = quat_fk(
         quats, positions, np.array(p.parents, dtype=int))
@@ -168,6 +167,41 @@ def load_bvh_first_frame(bvh_path, bvh_format="3DSM", scale=0.01):
             if ankle_name:
                 edges.append((ankle_name, mod))
     return frame_data, edges
+
+
+def detect_bvh_human_height(human_data):
+    """Auto-detect BVH character height (m) from first-frame joint positions.
+
+    Uses Head_z - min(feet_z) from the FIRST frame, so it reflects the
+    character's actual stature (not affected by BVH unit scale choices).
+    Returns None when required joints are missing.
+    """
+    # ---- find the highest point: Head, or fallback to Neck ----------
+    head_candidates = ["Head", "head", "Neck", "Neck1"]
+    head_name = next((n for n in head_candidates if n in human_data), None)
+    if head_name is None:
+        return None
+
+    # ---- find the lowest foot / ankle --------------------------------
+    foot_zs = []
+    for side in ("Left", "Right"):
+        for name in (f"{side}FootMod", f"{side}Ankle", f"{side}Foot"):
+            if name in human_data:
+                foot_zs.append(human_data[name][0][2])
+                break
+    if not foot_zs:
+        return None
+
+    head_z = human_data[head_name][0][2]
+    foot_z = min(foot_zs)
+    height = float(head_z - foot_z)
+
+    # Sanity check: a humanoid should be between 0.5 m and 3.0 m
+    if not (0.5 <= height <= 3.0):
+        print(f"  ⚠ Detected BVH height {height:.3f} m is outside "
+              f"reasonable range [0.5, 3.0] — "
+              f"check --bvh-scale (BVH may be in cm, not m).")
+    return height
 
 
 # ===================================================================
@@ -652,10 +686,17 @@ def main():
             ik_config = json.load(fh)
         ratio = 1.0
         if args.human_height is not None:
-            ratio = args.human_height / ik_config["human_height_assumption"]
-            print(f"  Human height: {args.human_height:.2f} m  →  "
-                  f"ratio = {args.human_height:.2f} / "
-                  f"{ik_config['human_height_assumption']:.2f} = {ratio:.4f}")
+            actual_height = args.human_height
+        else:
+            actual_height = detect_bvh_human_height(human_data)
+            if actual_height is None:
+                actual_height = ik_config["human_height_assumption"]
+                print(f"  ⚠ Cannot auto-detect BVH height, using "
+                      f"assumption: {actual_height:.2f} m")
+        ratio = actual_height / ik_config["human_height_assumption"]
+        print(f"  BVH human height: {actual_height:.3f} m  →  "
+              f"ratio = {actual_height:.3f} / "
+              f"{ik_config['human_height_assumption']:.2f} = {ratio:.4f}")
         human_data, human_to_robot = process_human_data(human_data, ik_config, ratio)
         for h_name, r_names in human_to_robot.items():
             human_mapped.add(h_name)

@@ -10,7 +10,7 @@ else
   PYTHON_CMD=(conda run -n gmr_cpython python)
 fi
 
-"${PYTHON_CMD[@]}" "${SCRIPT_DIR}/postprocess_csv.py" \
+"${PYTHON_CMD[@]}" "${SCRIPT_DIR}/tools/motion_jump_guard/postprocess_csv.py" \
   "${PROJECT_ROOT}/outputs/d20_25dof/qt_tachi_21.csv" \
   --fps 120 \
   --left 20 \

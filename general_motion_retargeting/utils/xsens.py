@@ -2,7 +2,6 @@ import numpy as np
 
 from .xsens_vendor.BVHParser import (
     BVHParser,
-    euler_to_quat,
     quat_fk,
     remove_quat_discontinuities,
 )
@@ -19,7 +18,7 @@ def load_xsens_file(args):
             reset_to_zero=args.reset_to_zero,
         )
 
-    quats = np.array([[euler_to_quat(rot) for rot in frame] for frame in rotations])
+    quats = parser.rotations_to_quats(rotations)
     quats = remove_quat_discontinuities(quats)
     global_quats, global_positions = quat_fk(
         quats,
