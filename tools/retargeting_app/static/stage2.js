@@ -81,6 +81,15 @@ async function init() {
   }
   $("btnSave").addEventListener("click", saveConfig);
   $("btnPreview").addEventListener("click", previewConfig);
+  $("btnAutoEstimate").addEventListener("click", () => runAutoEstimate(null));
+  $("btnAmbiguityCancel").addEventListener("click", () => {
+    $("ambiguityDialog").close();
+  });
+  $("btnAmbiguityOk").addEventListener("click", () => {
+    const resolutions = collectAmbiguityResolutions();
+    $("ambiguityDialog").close();
+    runAutoEstimate(resolutions);
+  });
   $("btnTransReset").addEventListener("click", () => {
     state.robotOffset = [0, 0, 0];
     applyRobotTranslate();
@@ -751,6 +760,156 @@ async function saveConfig() {
   } catch (err) {
     setError(err);
   }
+}
+
+function estimatePayload(resolutions) {
+  const scales = collectScales();
+  return {
+    xml: $("xmlSelect").value,
+    bvh: $("bvhSelect").value,
+    config_path: state.configPath,
+    config: state.config,
+    bvh_unit: Number($("bvhUnit").value),
+    scale_vertical: scales.vertical,
+    scale_horizontal: scales.horizontal,
+    offset_rows: collectOffsets(),
+    robot_root_name: state.config?.robot_root_name,
+    human_root_name: state.config?.human_root_name,
+    resolutions: resolutions || {},
+  };
+}
+
+async function runAutoEstimate(resolutions) {
+  const hint = $("estimateHint");
+  hint.textContent = "估计中…";
+  hint.style.color = "";
+  $("btnAutoEstimate").disabled = true;
+  try {
+    const data = await fetchJSON("/api/stage2/auto_estimate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(estimatePayload(resolutions)),
+    });
+
+    if (data.needs_resolution) {
+      showAmbiguityDialog(data.ambiguities || data.all_ambiguities || []);
+      hint.textContent = "请先在弹窗中选择一对多映射关系";
+      hint.style.color = "#f0a040";
+      return;
+    }
+
+    applyEstimateToPanels(data);
+    hint.textContent = formatEstimateMeta(data.meta);
+    // 刷新可视化（含 offset）
+    await applyCurrent(false);
+  } catch (err) {
+    hint.textContent = String(err.message || err);
+    hint.style.color = "#f07178";
+    setError(err);
+  } finally {
+    $("btnAutoEstimate").disabled = false;
+  }
+}
+
+function formatEstimateMeta(meta) {
+  if (!meta?.scale?.ratios) return "估计完成";
+  const r = meta.scale.ratios;
+  const raw = meta.scale.ratios_raw;
+  const hr = meta.scale.height_ratio;
+  let msg = `估计完成 · V下=${r.lower_vertical.toFixed(3)} V上=${r.upper_vertical.toFixed(3)} · H下=${r.lower_horizontal.toFixed(3)} H上=${r.upper_horizontal.toFixed(3)}`;
+  if (hr != null) {
+    msg += ` · 已补偿 height_ratio=${Number(hr).toFixed(3)}`;
+  }
+  if (raw) {
+    msg += ` (raw V下=${raw.lower_vertical.toFixed(3)})`;
+  }
+  return msg;
+}
+
+function applyEstimateToPanels(data) {
+  // Update scale inputs
+  const v = data.scale_vertical || {};
+  const h = data.scale_horizontal || {};
+  for (const row of document.querySelectorAll("#scaleList .scale-row[data-bone]")) {
+    const name = row.dataset.bone;
+    const inputs = row.querySelectorAll("input");
+    if (v[name] != null) inputs[0].value = Number(v[name]).toFixed(3);
+    if (h[name] != null) inputs[1].value = Number(h[name]).toFixed(3);
+  }
+  // Re-render offset panel with new rot matrices (pos kept from server rows)
+  if (data.offset_rows && state.scene) {
+    // merge: keep current pos from DOM if present
+    const posByRobot = {};
+    for (const card of document.querySelectorAll("#offsetList .offset-card")) {
+      posByRobot[card.dataset.robot] = [
+        Number(card.querySelector(".pos-x").value),
+        Number(card.querySelector(".pos-y").value),
+        Number(card.querySelector(".pos-z").value),
+      ];
+    }
+    const rows = data.offset_rows.map((r) => ({
+      ...r,
+      pos_offset: posByRobot[r.robot_body] || r.pos_offset,
+    }));
+    renderOffsetPanel(rows, state.scene);
+  }
+
+  // Sync into state.config scales for subsequent apply
+  if (state.config) {
+    state.config.human_scale_table_vertical = { ...v };
+    state.config.human_scale_table_horizontal = { ...h };
+  }
+}
+
+function showAmbiguityDialog(ambiguities) {
+  const list = $("ambiguityList");
+  list.innerHTML = "";
+  if (!ambiguities.length) {
+    list.innerHTML = "<p class='hint'>无歧义项</p>";
+  }
+  for (const a of ambiguities) {
+    const box = document.createElement("div");
+    box.className = "amb-item";
+    const title = document.createElement("div");
+    title.className = "amb-title";
+    const sel = document.createElement("select");
+    sel.className = "amb-select";
+
+    if (a.kind === "robot_to_many_humans") {
+      title.textContent = `机器人 ${a.robot_body} 对应多个人类骨骼 → 选择人类骨骼`;
+      sel.dataset.resKey = a.robot_body;
+      sel.dataset.kind = a.kind;
+      for (const c of a.candidates) {
+        const opt = document.createElement("option");
+        opt.value = c;
+        opt.textContent = c;
+        sel.appendChild(opt);
+      }
+    } else if (a.kind === "human_to_many_robots") {
+      title.textContent = `人类 ${a.human_bone} 被多个机器人关节映射 → 选择用于估计旋转的机器人关节`;
+      sel.dataset.resKey = `human::${a.human_bone}`;
+      sel.dataset.kind = a.kind;
+      for (const c of a.candidates) {
+        const opt = document.createElement("option");
+        opt.value = c;
+        opt.textContent = c;
+        sel.appendChild(opt);
+      }
+    } else {
+      continue;
+    }
+    box.append(title, sel);
+    list.appendChild(box);
+  }
+  $("ambiguityDialog").showModal();
+}
+
+function collectAmbiguityResolutions() {
+  const resolutions = {};
+  for (const sel of document.querySelectorAll("#ambiguityList .amb-select")) {
+    resolutions[sel.dataset.resKey] = sel.value;
+  }
+  return resolutions;
 }
 
 init().catch((err) => setError(err));

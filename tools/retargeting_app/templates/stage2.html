@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>GMR · Stage 2 — Scale & Offset</title>
   <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
-  <link rel="stylesheet" href="/static/app.css?v=stage2-18" />
+  <link rel="stylesheet" href="/static/app.css?v=stage2-19" />
 </head>
 <body>
   <header class="topbar">
@@ -89,6 +89,13 @@
         </div>
         <p class="status" id="saveStatus"></p>
       </section>
+
+      <section class="card">
+        <h2>自动估计 (T-pose)</h2>
+        <p class="hint">假定机器人与 BVH 均为 T-pose，估计 scale 与旋转矩阵（xyz offset 不变）</p>
+        <button id="btnAutoEstimate" class="primary" type="button">自动估计参数</button>
+        <p class="hint" id="estimateHint" style="margin-top:0.45rem;"></p>
+      </section>
     </aside>
 
     <!-- Column 2: Scale -->
@@ -136,6 +143,18 @@
     </form>
   </dialog>
 
-  <script src="/static/stage2.js?v=stage2-18"></script>
+  <dialog id="ambiguityDialog">
+    <div class="dialog-body">
+      <h3>选择对应关系（用于旋转估计）</h3>
+      <p class="hint">以下关节存在一对多映射，请为每组指定用于估计旋转矩阵的对应关系。</p>
+      <div id="ambiguityList"></div>
+      <div class="row" style="margin-top:0.85rem;">
+        <button type="button" id="btnAmbiguityCancel" class="ghost">取消</button>
+        <button type="button" id="btnAmbiguityOk" class="primary">确认并估计</button>
+      </div>
+    </div>
+  </dialog>
+
+  <script src="/static/stage2.js?v=stage2-20"></script>
 </body>
 </html>

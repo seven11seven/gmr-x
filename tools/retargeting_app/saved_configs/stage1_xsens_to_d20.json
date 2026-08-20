@@ -5,58 +5,58 @@
     "human_height_assumption": 1.8,
     "human_root_name": "Hips",
     "human_scale_table_horizontal": {
+        "Hips": 2.097,
         "Chest": 1.0,
         "Chest2": 1.0,
         "Chest3": 1.0,
         "Chest4": 1.0,
-        "Head": 1.0,
-        "Hips": 1.0,
-        "LeftAnkle": 1.0,
-        "LeftCollar": 1.0,
-        "LeftElbow": 1.0,
-        "LeftFootMod": 1.0,
-        "LeftHip": 1.0,
-        "LeftKnee": 1.0,
-        "LeftShoulder": 1.0,
-        "LeftToe": 1.0,
-        "LeftWrist": 1.0,
+        "LeftCollar": 1.256,
+        "LeftShoulder": 1.256,
+        "LeftElbow": 1.256,
+        "LeftWrist": 1.256,
         "Neck": 1.0,
-        "RightAnkle": 1.0,
-        "RightCollar": 1.0,
-        "RightElbow": 1.0,
-        "RightFootMod": 1.0,
-        "RightHip": 1.0,
-        "RightKnee": 1.0,
-        "RightShoulder": 1.0,
-        "RightToe": 1.0,
-        "RightWrist": 1.0
+        "Head": 1.0,
+        "RightCollar": 1.256,
+        "RightShoulder": 1.256,
+        "RightElbow": 1.256,
+        "RightWrist": 1.256,
+        "LeftHip": 2.097,
+        "LeftKnee": 2.097,
+        "LeftAnkle": 2.097,
+        "LeftFootMod": 2.097,
+        "LeftToe": 2.097,
+        "RightHip": 2.097,
+        "RightKnee": 2.097,
+        "RightAnkle": 2.097,
+        "RightFootMod": 2.097,
+        "RightToe": 2.097
     },
     "human_scale_table_vertical": {
-        "Chest": 1.1,
-        "Chest2": 1.0,
-        "Chest3": 1.05,
-        "Chest4": 1.03,
-        "Head": 1.0,
-        "Hips": 1.0,
-        "LeftAnkle": 1.0,
-        "LeftCollar": 1.0,
-        "LeftElbow": 1.1,
-        "LeftFootMod": 1.0,
-        "LeftHip": 1.0,
-        "LeftKnee": 1.0,
-        "LeftShoulder": 1.1,
-        "LeftToe": 1.0,
-        "LeftWrist": 1.1,
-        "Neck": 1.1,
-        "RightAnkle": 1.0,
-        "RightCollar": 1.0,
-        "RightElbow": 1.1,
-        "RightFootMod": 1.0,
-        "RightHip": 1.0,
-        "RightKnee": 1.0,
-        "RightShoulder": 1.1,
-        "RightToe": 1.0,
-        "RightWrist": 1.1
+        "Hips": 1.378,
+        "Chest": 1.085,
+        "Chest2": 1.085,
+        "Chest3": 1.085,
+        "Chest4": 1.085,
+        "LeftCollar": 1.085,
+        "LeftShoulder": 1.085,
+        "LeftElbow": 1.085,
+        "LeftWrist": 1.085,
+        "Neck": 1.085,
+        "Head": 1.085,
+        "RightCollar": 1.085,
+        "RightShoulder": 1.085,
+        "RightElbow": 1.085,
+        "RightWrist": 1.085,
+        "LeftHip": 1.378,
+        "LeftKnee": 1.378,
+        "LeftAnkle": 1.378,
+        "LeftFootMod": 1.378,
+        "LeftToe": 1.378,
+        "RightHip": 1.378,
+        "RightKnee": 1.378,
+        "RightAnkle": 1.378,
+        "RightFootMod": 1.378,
+        "RightToe": 1.378
     },
     "ik_match_table1": {
         "aux_L3": [
@@ -181,10 +181,10 @@
                 0.0
             ],
             [
-                1.0,
-                0.0,
-                0.0,
-                0.0
+                0.5,
+                0.5,
+                0.5,
+                0.5
             ]
         ],
         "aux_left_knee": [
@@ -277,10 +277,10 @@
                 0.0
             ],
             [
-                1.0,
-                0.0,
-                0.0,
-                0.0
+                -0.5,
+                0.5,
+                -0.5,
+                0.5
             ]
         ],
         "aux_right_knee": [
@@ -325,10 +325,10 @@
                 0.0
             ],
             [
-                1.0,
-                0.0,
-                0.0,
-                0.0
+                0.5,
+                0.5,
+                0.5,
+                0.5
             ]
         ],
         "left_hip_pitch_link": [
@@ -389,8 +389,8 @@
                 0.0
             ],
             [
-                1.0,
-                0.0,
+                0.7071067811865475,
+                0.7071067811865475,
                 0.0,
                 0.0
             ]
@@ -405,10 +405,10 @@
                 0.0
             ],
             [
-                1.0,
-                0.0,
-                0.0,
-                0.0
+                -0.5,
+                0.5,
+                -0.5,
+                0.5
             ]
         ],
         "right_hip_pitch_link": [
@@ -469,8 +469,8 @@
                 0.0
             ],
             [
-                1.0,
-                0.0,
+                -0.7071067811865475,
+                0.7071067811865475,
                 0.0,
                 0.0
             ]

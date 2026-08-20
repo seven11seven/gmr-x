@@ -44,6 +44,7 @@ from tools.retargeting_app.stage2_logic import (  # noqa: E402
     merge_stage2_edits,
     quat_wxyz_to_matrix,
 )
+from tools.retargeting_app.auto_estimate import auto_estimate  # noqa: E402
 
 app = Flask(
     __name__,
@@ -317,6 +318,45 @@ def api_stage2_rot_convert():
             return jsonify({"ok": True, "quat_wxyz": list(payload["quat_wxyz"]), "matrix": mat})
         return jsonify({"ok": False, "error": "provide matrix or quat_wxyz"}), 400
     except Exception as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@app.post("/api/stage2/auto_estimate")
+def api_stage2_auto_estimate():
+    """T-pose auto estimate of scale tables + rotation offsets."""
+    try:
+        payload = request.get_json(force=True) or {}
+        xml = payload.get("xml") or DEFAULT_XML
+        bvh = payload.get("bvh") or DEFAULT_BVH
+        config_path = payload.get("config_path")
+        if payload.get("config"):
+            cfg = payload["config"]
+        elif config_path:
+            cfg = load_config_file(config_path)
+        else:
+            return jsonify({"ok": False, "error": "missing config"}), 400
+
+        # Merge current UI edits into config before estimating
+        cfg = merge_stage2_edits(
+            cfg,
+            scale_vertical=payload.get("scale_vertical"),
+            scale_horizontal=payload.get("scale_horizontal"),
+            offset_rows=payload.get("offset_rows"),
+            robot_root_name=payload.get("robot_root_name"),
+            human_root_name=payload.get("human_root_name"),
+            bvh_unit=payload.get("bvh_unit"),
+        )
+
+        result = auto_estimate(
+            xml_path=xml,
+            bvh_path=bvh,
+            config=cfg,
+            bvh_unit=payload.get("bvh_unit", cfg.get("bvh_unit")),
+            resolutions=payload.get("resolutions"),
+        )
+        return jsonify({"ok": True, **result})
+    except Exception as exc:
+        traceback.print_exc()
         return jsonify({"ok": False, "error": str(exc)}), 400
 
 

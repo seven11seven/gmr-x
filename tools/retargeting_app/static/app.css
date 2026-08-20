@@ -369,6 +369,35 @@ a.step:hover { border-color: #3d6f9c; color: var(--text); }
   font-size: 0.78rem;
 }
 
+.amb-item {
+  background: #161c24;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.55rem 0.65rem;
+  margin-bottom: 0.5rem;
+}
+.amb-title {
+  font-size: 0.78rem;
+  color: #c5d0dc;
+  margin-bottom: 0.35rem;
+}
+.amb-select {
+  width: 100%;
+  background: #12171e;
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 0.4rem 0.5rem;
+  font: inherit;
+  font-size: 0.82rem;
+}
+
+#ambiguityDialog {
+  max-width: min(560px, 92vw);
+  width: 560px;
+}
+#ambiguityList { max-height: 50vh; overflow: auto; }
+
 @media (max-width: 900px) {
   .layout { grid-template-columns: 1fr; grid-template-rows: auto 55vh; }
   .panel { border-right: none; border-bottom: 1px solid var(--line); max-height: 48vh; }
