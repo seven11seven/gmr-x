@@ -52,6 +52,13 @@ UPPER_LIMB_TOKENS = (
 TORSO_TOKENS = (
     "chest", "spine", "neck", "head", "torso", "thorax",
 )
+# Bones whose horizontal scale should affect *width* (not limb length).
+# Length-like bones (knee/ankle/elbow/…) use isotropic vertical scale so that
+# world/root-frame horizontal factors do not stretch limbs when the character
+# is no longer in T-pose (e.g. lying down).
+WIDTH_BONE_TOKENS = (
+    "hips", "pelvis", "hip", "collar", "shoulder",
+)
 
 
 def _find_name(names: set[str] | list[str], candidates: tuple[str, ...]) -> str | None:
@@ -114,6 +121,15 @@ def _classify_human_bone(name: str) -> str:
         if t in n:
             return "torso"
     return "other"
+
+
+def _is_width_bone(name: str) -> bool:
+    """True if horizontal scale should encode body *width* for this bone."""
+    n = name.lower()
+    for t in WIDTH_BONE_TOKENS:
+        if t in n:
+            return True
+    return False
 
 
 def _safe_ratio(num: float, den: float, default: float = 1.0) -> float:
@@ -289,24 +305,37 @@ def estimate_scales(
 
     scale_v: dict[str, float] = {}
     scale_h: dict[str, float] = {}
+    # Config values that should stay effective 1.0 after runtime * height_ratio.
+    unity = round(1.0 / hr, 4)
     for name in bone_names:
         kind = _classify_human_bone(name)
         if kind == "lower":
             scale_v[name] = round(lower_v, 4)
-            scale_h[name] = round(lower_h, 4)
+            # Width bones keep ankle-span ratio; length bones stay isotropic
+            # with vertical so prone poses do not get limb stretch.
+            if _is_width_bone(name):
+                scale_h[name] = round(lower_h, 4)
+            else:
+                scale_h[name] = round(lower_v, 4)
         elif kind == "upper_limb":
             scale_v[name] = round(upper_v, 4)
-            scale_h[name] = round(upper_h, 4)
+            if _is_width_bone(name):
+                scale_h[name] = round(upper_h, 4)
+            else:
+                # Elbow/wrist/hand: keep upper_h so T-pose arm span still matches.
+                scale_h[name] = round(upper_h, 4)
         elif kind == "torso":
             scale_v[name] = round(upper_v, 4)
-            scale_h[name] = 1.0  # 躯干 horizontal 保持为 1（config 值，不再补偿）
+            scale_h[name] = unity  # effective horizontal ≈ 1 after * height_ratio
         else:
             scale_v[name] = round(upper_v, 4)
-            scale_h[name] = 1.0
+            scale_h[name] = unity
 
     if h_root in scale_v:
+        # Root horizontal must NOT use ankle-span ratio — that amplifies the
+        # whole motion trajectory in XY. Keep effective H≈1; V from lower body.
         scale_v[h_root] = round(lower_v, 4)
-        scale_h[h_root] = round(lower_h, 4)
+        scale_h[h_root] = unity
 
     meta = {
         "landmarks": {

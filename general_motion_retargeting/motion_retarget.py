@@ -456,15 +456,24 @@ class GeneralMotionRetargeting:
 
 
     def scale_human_data(self, human_data, human_root_name, scale_table_vertical, scale_table_horizontal):
+        """Scale human landmarks with per-bone vertical/horizontal factors.
+
+        Horizontal (X,Y) and vertical (Z) are applied in the *pelvis/root local
+        frame*, then mapped back to world.  World-axis scaling would treat a
+        prone character's limb length as "horizontal" and badly stretch it.
+        Root translation still uses world axes (XY ground plane, Z up).
+        """
         human_data_local = {}
         root_pos, root_quat = human_data[human_root_name]
 
-        # scale root: vertical (Z) and horizontal (X,Y) separately
+        # scale root: vertical (Z) and horizontal (X,Y) separately in world
         sv = scale_table_vertical[human_root_name]
         sh = scale_table_horizontal[human_root_name]
         scaled_root_pos = root_pos * np.array([sh, sh, sv])
 
-        # scale other body parts in root-relative local frame, per-axis
+        R_root = R.from_quat(root_quat, scalar_first=True).as_matrix()
+
+        # scale other body parts in root-local frame, per-axis
         for body_name in human_data.keys():
             if body_name not in scale_table_vertical:
                 continue
@@ -473,13 +482,17 @@ class GeneralMotionRetargeting:
             sv_b = scale_table_vertical[body_name]
             sh_b = scale_table_horizontal[body_name]
             local_pos = human_data[body_name][0] - root_pos
-            scaled_local = local_pos * np.array([sh_b, sh_b, sv_b])
-            human_data_local[body_name] = scaled_local
+            local_in_root = R_root.T @ local_pos
+            scaled_in_root = local_in_root * np.array([sh_b, sh_b, sv_b])
+            human_data_local[body_name] = R_root @ scaled_in_root
 
         # transform back to global frame
         human_data_global = {human_root_name: (scaled_root_pos, root_quat)}
         for body_name in human_data_local.keys():
-            human_data_global[body_name] = (human_data_local[body_name] + scaled_root_pos, human_data[body_name][1])
+            human_data_global[body_name] = (
+                human_data_local[body_name] + scaled_root_pos,
+                human_data[body_name][1],
+            )
 
         return human_data_global
     

@@ -45,6 +45,11 @@ from tools.retargeting_app.stage2_logic import (  # noqa: E402
     quat_wxyz_to_matrix,
 )
 from tools.retargeting_app.auto_estimate import auto_estimate  # noqa: E402
+from tools.retargeting_app.stage3_logic import (  # noqa: E402
+    extract_weight_rows,
+    merge_stage3_weights,
+    run_preview_retarget,
+)
 
 app = Flask(
     __name__,
@@ -72,6 +77,11 @@ def index():
 @app.get("/stage2")
 def stage2_page():
     return render_template("stage2.html")
+
+
+@app.get("/stage3")
+def stage3_page():
+    return render_template("stage3.html")
 
 
 @app.get("/api/meta")
@@ -360,6 +370,103 @@ def api_stage2_auto_estimate():
         return jsonify({"ok": False, "error": str(exc)}), 400
 
 
+# ---------------------------------------------------------------------------
+# Stage-3 APIs: pos/rot weight tuning + short retarget preview
+# ---------------------------------------------------------------------------
+
+@app.post("/api/stage3/weights")
+def api_stage3_weights():
+    """Load weight rows from a config (no retarget)."""
+    try:
+        payload = request.get_json(force=True) or {}
+        config_path = payload.get("config_path") or DEFAULT_STAGE2_CONFIG
+        if payload.get("config"):
+            cfg = payload["config"]
+        else:
+            cfg = load_config_file(config_path)
+        rows = extract_weight_rows(cfg.get("ik_match_table1", {}))
+        return jsonify({
+            "ok": True,
+            "config_path": config_path,
+            "config": cfg,
+            "weight_rows": rows,
+        })
+    except Exception as exc:
+        traceback.print_exc()
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@app.post("/api/stage3/retarget")
+def api_stage3_retarget():
+    """Retarget first N frames with current weights for preview."""
+    try:
+        payload = request.get_json(force=True) or {}
+        xml = payload.get("xml") or DEFAULT_XML
+        bvh = payload.get("bvh") or DEFAULT_BVH
+        config_path = payload.get("config_path")
+        max_frames = int(payload.get("max_frames", 50))
+
+        if payload.get("config"):
+            base_cfg = payload["config"]
+        elif config_path:
+            base_cfg = load_config_file(config_path)
+        else:
+            base_cfg = load_config_file(DEFAULT_STAGE2_CONFIG)
+            config_path = DEFAULT_STAGE2_CONFIG
+
+        cfg = merge_stage3_weights(base_cfg, payload.get("weight_rows"))
+        if payload.get("bvh_unit") is not None:
+            unit = int(payload["bvh_unit"])
+            if unit in BVH_UNIT_OPTIONS:
+                cfg["bvh_unit"] = unit
+                cfg["bvh_scale"] = float(BVH_UNIT_OPTIONS[unit]["scale"])
+
+        result = run_preview_retarget(
+            xml_path=xml,
+            bvh_path=bvh,
+            config=cfg,
+            bvh_unit=cfg.get("bvh_unit"),
+            max_frames=max_frames,
+        )
+        return jsonify({
+            "ok": True,
+            "config": cfg,
+            "config_path": config_path,
+            **result,
+        })
+    except Exception as exc:
+        traceback.print_exc()
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@app.post("/api/stage3/config/save")
+def api_stage3_save():
+    try:
+        payload = request.get_json(force=True) or {}
+        config_path = payload.get("config_path") or payload.get("base_config_path")
+        if not config_path and not payload.get("base_config"):
+            return jsonify({"ok": False, "error": "missing config_path"}), 400
+
+        base_cfg = payload.get("base_config") or load_config_file(config_path)
+        cfg = merge_stage3_weights(base_cfg, payload.get("weight_rows"))
+
+        filename = payload.get("filename")
+        if not filename:
+            filename = pathlib.Path(config_path).name if config_path else "stage3_config.json"
+
+        dest_dir = payload.get("dest_dir")
+        if payload.get("save_to_ik_configs"):
+            dest_dir = "general_motion_retargeting/ik_configs"
+        elif payload.get("overwrite") and config_path:
+            dest_dir = str(pathlib.Path(config_path).parent)
+
+        saved = save_config_file(cfg, filename, dest_dir=dest_dir)
+        return jsonify({"ok": True, "path": saved, "config": cfg})
+    except Exception as exc:
+        traceback.print_exc()
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
 def main():
     ap = argparse.ArgumentParser(description="GMR retargeting config web app")
     ap.add_argument("--host", default="127.0.0.1")
@@ -369,6 +476,7 @@ def main():
     print(f"GMR app → http://{args.host}:{args.port}")
     print(f"  Stage-1: http://{args.host}:{args.port}/")
     print(f"  Stage-2: http://{args.host}:{args.port}/stage2")
+    print(f"  Stage-3: http://{args.host}:{args.port}/stage3")
     print(f"Project root: {_PROJECT_ROOT}")
     app.run(host=args.host, port=args.port, debug=args.debug)
 

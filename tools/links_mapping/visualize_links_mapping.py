@@ -237,6 +237,9 @@ def process_human_data(human_data, ik_config, ratio=1.0):
     root_pos, root_quat = human_data[human_root]
     sv_r, sh_r = sv_table.get(human_root, 1.0), sh_table.get(human_root, 1.0)
     scaled_root = root_pos * np.array([sh_r, sh_r, sv_r])
+    # Match GMR.scale_human_data: anisotropic scale in pelvis/root local frame
+    # so prone poses are not stretched by world-XY "horizontal" factors.
+    R_root = R.from_quat(root_quat, scalar_first=True).as_matrix()
 
     local: dict = {}
     for name in human_data:
@@ -244,8 +247,11 @@ def process_human_data(human_data, ik_config, ratio=1.0):
             continue
         lp = human_data[name][0] - root_pos
         if name in sv_table:
-            lp = lp * np.array([sh_table[name], sh_table[name],
-                                sv_table[name]])
+            lp_root = R_root.T @ lp
+            lp_root = lp_root * np.array([
+                sh_table[name], sh_table[name], sv_table[name],
+            ])
+            lp = R_root @ lp_root
         local[name] = lp
     scaled: dict = {human_root: (scaled_root, root_quat)}
     for name, lp in local.items():
