@@ -855,6 +855,103 @@ def _draw_human_skeleton_mj(viewer, human_positions, human_edges, human_data=Non
             viewer.user_scn.ngeom += 1
 
 
+# Ground-projection marker parameters (drawn on the z=0 ground plane).
+_GROUND_OFFSET = 0.01  # small lift to avoid z-fighting with the ground plane
+
+
+def _resolve_ankle_body_id(model, side: str):
+    """Return the ``side`` ('left'/'right') ankle/foot body id.
+
+    Prefers the foot link ('roll' / 'foot' in the name) over auxiliary frames.
+    Returns ``None`` when no matching body is found.
+    """
+    candidates = []
+    for i in range(model.nbody):
+        name = mj.mj_id2name(model, mj.mjtObj.mjOBJ_BODY, i) or ""
+        if side in name and "ankle" in name:
+            candidates.append((i, name))
+    if not candidates:
+        return None
+
+    def _score(item):
+        _, name = item
+        s = 0
+        if "roll" in name or "foot" in name:
+            s += 2
+        if "aux" in name or "end" in name or "toe" in name:
+            s -= 1
+        return s
+
+    candidates.sort(key=_score, reverse=True)
+    return candidates[0][0]
+
+
+def _draw_robot_com_projection_mj(viewer, com_pos):
+    """Draw the robot COM projected onto the ground plane as a red sphere."""
+    g = viewer.user_scn.geoms[viewer.user_scn.ngeom]
+    mj.mjv_initGeom(
+        g,
+        type=mj.mjtGeom.mjGEOM_SPHERE,
+        size=[0.02, 0, 0],
+        pos=np.array([float(com_pos[0]), float(com_pos[1]), _GROUND_OFFSET],
+                     dtype=float),
+        mat=np.eye(3).flatten(),
+        rgba=[1.0, 0.0, 0.0, 0.95],
+    )
+    viewer.user_scn.ngeom += 1
+
+
+def _draw_ankle_projections_mj(viewer, l_ankle_pos, r_ankle_pos):
+    """Draw the ankle ground projections and the segment joining them.
+
+    - Left / right ankles → green / blue spheres projected onto the ground.
+    - The connecting segment → yellow capsule between the two projections.
+    """
+    C_L_ANKLE = [0.0, 1.0, 0.0, 0.95]  # green
+    C_R_ANKLE = [0.0, 0.0, 1.0, 0.95]  # blue
+    C_LINE = [1.0, 1.0, 0.0, 0.90]     # yellow
+
+    lp = np.array([float(l_ankle_pos[0]), float(l_ankle_pos[1]), _GROUND_OFFSET])
+    rp = np.array([float(r_ankle_pos[0]), float(r_ankle_pos[1]), _GROUND_OFFSET])
+
+    # Ankle ground-projection spheres
+    for pos, rgba in ((lp, C_L_ANKLE), (rp, C_R_ANKLE)):
+        g = viewer.user_scn.geoms[viewer.user_scn.ngeom]
+        mj.mjv_initGeom(
+            g, type=mj.mjtGeom.mjGEOM_SPHERE,
+            size=[0.02, 0, 0],
+            pos=pos,
+            mat=np.eye(3).flatten(),
+            rgba=rgba,
+        )
+        viewer.user_scn.ngeom += 1
+
+    # Ankle-to-ankle segment (capsule with local +Z as its axis)
+    mid = (lp + rp) / 2
+    direction = rp - lp
+    dist = float(np.linalg.norm(direction))
+    if dist < 1e-6:
+        return
+    half = dist / 2
+    z_axis = direction / dist
+    ref = (np.array([1.0, 0.0, 0.0]) if abs(z_axis[0]) < 0.9
+           else np.array([0.0, 1.0, 0.0]))
+    x_axis = np.cross(z_axis, ref)
+    x_axis /= np.linalg.norm(x_axis)
+    y_axis = np.cross(z_axis, x_axis)
+    line_mat = np.column_stack([x_axis, y_axis, z_axis])
+
+    g = viewer.user_scn.geoms[viewer.user_scn.ngeom]
+    mj.mjv_initGeom(
+        g, type=mj.mjtGeom.mjGEOM_CAPSULE,
+        size=[0.008, half, 0.0],
+        pos=mid,
+        mat=line_mat.flatten(),
+        rgba=C_LINE,
+    )
+    viewer.user_scn.ngeom += 1
+
+
 def launch_mujoco_viewer(
     xml_path: pathlib.Path,
     all_frame_data: list,
@@ -875,6 +972,13 @@ def launch_mujoco_viewer(
     """
     model = mj.MjModel.from_xml_path(str(xml_path))
     data = mj.MjData(model)
+
+    # Resolve ankle/foot bodies for the ground-projection markers.
+    left_ankle_id = _resolve_ankle_body_id(model, "left")
+    right_ankle_id = _resolve_ankle_body_id(model, "right")
+    if left_ankle_id is None or right_ankle_id is None:
+        print("  [MuJoCo Panel] WARNING: could not locate ankle bodies – "
+              "ankle markers disabled.")
 
     # State – start playing immediately so the user sees motion without
     # needing to press any key first.
@@ -931,7 +1035,8 @@ def launch_mujoco_viewer(
     print("\n  [MuJoCo Panel] Controls:")
     print("    ← →  prev/next frame    ↑ ↓  jump ±10")
     print("    Space  play/pause       1-5  speed (0.25× … 4×)")
-    print("    Home/End  first/last    Esc  close\n")
+    print("    Home/End  first/last    Esc  close")
+    print("    Markers: red=CoM  green/blue=ankles  yellow=ankle line\n")
 
     _print_viewer_status(state, total_frames)
 
@@ -973,6 +1078,10 @@ def launch_mujoco_viewer(
             try:
                 _draw_human_skeleton_mj(viewer, fd["human_positions"], human_edges,
                                         fd.get("human_data", {}))
+                _draw_robot_com_projection_mj(viewer, data.subtree_com[0])
+                if left_ankle_id is not None and right_ankle_id is not None:
+                    _draw_ankle_projections_mj(
+                        viewer, data.xpos[left_ankle_id], data.xpos[right_ankle_id])
                 if not _axes_diag_done:
                     hd = fd.get("human_data", {})
                     n_quat = sum(1 for v in hd.values()

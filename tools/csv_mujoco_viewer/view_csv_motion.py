@@ -42,6 +42,16 @@ import mujoco.viewer as mjv
 
 DEFAULT_XML = "assets/D20_29dof/mjcf/D20.xml"
 
+# Ground-projection marker parameters (drawn on the z=0 ground plane).
+_GROUND_OFFSET = 0.01          # small lift off the ground to avoid z-fighting
+_COM_MARKER_SIZE = 0.04
+_ANKLE_MARKER_SIZE = 0.03
+_ANKLE_LINE_RADIUS = 0.012
+_COM_RGBA = (1.0, 0.0, 0.0, 0.9)        # red    – robot centre of mass
+_LEFT_ANKLE_RGBA = (0.0, 1.0, 0.0, 0.9)  # green  – left ankle
+_RIGHT_ANKLE_RGBA = (0.0, 0.0, 1.0, 0.9) # blue   – right ankle
+_ANKLE_LINE_RGBA = (1.0, 1.0, 0.0, 0.9)  # yellow – ankle-to-ankle segment
+
 
 # ============================================================================
 #  Load CSV
@@ -104,16 +114,144 @@ def csv_to_mj_qpos(csv_row: np.ndarray, num_joints: int):
 #  MuJoCo viewer
 # ============================================================================
 
+def _load_model_with_markers(xml_path: pathlib.Path):
+    """Load the robot model and attach ground-projection marker geoms.
+
+    Adds four mocap bodies (whose pose is driven per-frame via ``mocap_pos`` /
+    ``mocap_quat``) so the playback loop can overlay on the ground plane::
+
+        __com_proj     – red sphere:  projection of the robot centre of mass
+        __l_ankle_proj – green sphere: projection of the left ankle
+        __r_ankle_proj – blue sphere:  projection of the right ankle
+        __ankle_line   – yellow capsule: segment joining the two ankle projections
+    """
+    spec = mj.MjSpec.from_file(str(xml_path))
+    wb = spec.worldbody
+
+    com = wb.add_body(name="__com_proj", mocap=True)
+    com.add_geom(name="__com_proj_geom", type=mj.mjtGeom.mjGEOM_SPHERE,
+                 size=[_COM_MARKER_SIZE], rgba=_COM_RGBA,
+                 contype=0, conaffinity=0)
+
+    l = wb.add_body(name="__l_ankle_proj", mocap=True)
+    l.add_geom(name="__l_ankle_proj_geom", type=mj.mjtGeom.mjGEOM_SPHERE,
+               size=[_ANKLE_MARKER_SIZE], rgba=_LEFT_ANKLE_RGBA,
+               contype=0, conaffinity=0)
+
+    r = wb.add_body(name="__r_ankle_proj", mocap=True)
+    r.add_geom(name="__r_ankle_proj_geom", type=mj.mjtGeom.mjGEOM_SPHERE,
+               size=[_ANKLE_MARKER_SIZE], rgba=_RIGHT_ANKLE_RGBA,
+               contype=0, conaffinity=0)
+
+    line = wb.add_body(name="__ankle_line", mocap=True)
+    line.add_geom(name="__ankle_line_geom", type=mj.mjtGeom.mjGEOM_CAPSULE,
+                  size=[_ANKLE_LINE_RADIUS, 0.1, 0.0], rgba=_ANKLE_LINE_RGBA,
+                  contype=0, conaffinity=0)
+
+    return spec.compile()
+
+
+def _find_ankle_body_id(model, side: str):
+    """Auto-detect the ``side`` ('left'/'right') ankle/foot body id.
+
+    Picks a body whose name contains both ``side`` and 'ankle', preferring the
+    foot link ('roll' / 'foot' in the name) over auxiliary frames.
+    """
+    candidates = []
+    for i in range(model.nbody):
+        name = model.body(i).name or ""
+        if side in name and "ankle" in name:
+            candidates.append((i, name))
+    if not candidates:
+        return None
+
+    def _score(item):
+        _, name = item
+        s = 0
+        if "roll" in name or "foot" in name:
+            s += 2
+        if "aux" in name or "end" in name or "toe" in name:
+            s -= 1
+        return s
+
+    candidates.sort(key=_score, reverse=True)
+    return candidates[0][0]
+
+
+def _resolve_body_id(model, preferred: str, side: str):
+    """Return a body id for ``preferred``, falling back to auto-detection."""
+    if preferred:
+        try:
+            return model.body(preferred).id
+        except Exception:
+            pass
+    return _find_ankle_body_id(model, side)
+
+
+def _update_ground_markers(model, data, com_mocapid, l_mocapid, r_mocapid,
+                           line_mocapid, line_geomid, left_id, right_id):
+    """Project the CoM and ankle markers onto the z=0 ground plane."""
+    # Robot centre of mass → ground projection
+    com = data.subtree_com[0]
+    data.mocap_pos[com_mocapid] = np.array([com[0], com[1], _GROUND_OFFSET])
+
+    if left_id is None or right_id is None:
+        return
+
+    lp = data.xpos[left_id]
+    rp = data.xpos[right_id]
+    l_proj = np.array([lp[0], lp[1], _GROUND_OFFSET])
+    r_proj = np.array([rp[0], rp[1], _GROUND_OFFSET])
+
+    data.mocap_pos[l_mocapid] = l_proj
+    data.mocap_pos[r_mocapid] = r_proj
+
+    # Ankle-to-ankle segment (capsule whose axis is local +Z).
+    mid = 0.5 * (l_proj + r_proj)
+    direc = r_proj - l_proj
+    length = float(np.linalg.norm(direc))
+    data.mocap_pos[line_mocapid] = mid
+
+    q = np.zeros(4)
+    if length > 1e-9:
+        mj.mju_quatZ2Vec(q, direc)
+    else:
+        q[0] = 1.0
+    data.mocap_quat[line_mocapid] = q
+    model.geom_size[line_geomid] = [_ANKLE_LINE_RADIUS, 0.5 * length, 0.0]
+
+
 def play_csv_in_mujoco(
     xml_path: pathlib.Path,
     all_qpos: np.ndarray,
     motion_fps: float = 120.0,
     num_joints: int = 29,
+    left_ankle: str = "left_ankle_roll_link",
+    right_ankle: str = "right_ankle_roll_link",
 ):
-    """Open a MuJoCo passive viewer and play the motion."""
-    model = mj.MjModel.from_xml_path(str(xml_path))
+    """Open a MuJoCo passive viewer and play the motion.
+
+    Overlays the robot's centre-of-mass ground projection (red sphere), the
+    ankle ground projections (green/blue spheres) and the segment joining the
+    two ankles (yellow capsule).
+    """
+    model = _load_model_with_markers(xml_path)
     data = mj.MjData(model)
     total_frames = len(all_qpos)
+
+    # Marker handles
+    com_mocapid = model.body("__com_proj").mocapid
+    l_mocapid = model.body("__l_ankle_proj").mocapid
+    r_mocapid = model.body("__r_ankle_proj").mocapid
+    line_mocapid = model.body("__ankle_line").mocapid
+    line_geomid = model.geom("__ankle_line_geom").id
+
+    # Resolve ankle bodies (auto-detect when the named body is absent).
+    left_id = _resolve_body_id(model, left_ankle, "left")
+    right_id = _resolve_body_id(model, right_ankle, "right")
+    if left_id is None or right_id is None:
+        print("  WARNING: could not locate ankle bodies – ankle markers disabled.")
+        left_id = right_id = None
 
     # trackball camera
     model.stat.center = np.array([0.0, 0.0, 0.8])
@@ -159,7 +297,8 @@ def play_csv_in_mujoco(
     print("\n  Controls:")
     print("    ← →  prev/next frame    ↑ ↓  jump ±10")
     print("    Space  play/pause       1-5  speed (0.25× … 4×)")
-    print("    Home/End  first/last    Esc  close\n")
+    print("    Home/End  first/last    Esc  close")
+    print("    Markers: red=CoM  green/blue=ankles  yellow=ankle line\n")
 
     _print_status(state, total_frames)
 
@@ -181,6 +320,11 @@ def play_csv_in_mujoco(
             prev_frame = state["current"]
             data.qpos[:] = csv_to_mj_qpos(all_qpos[state["current"]], num_joints)
             mj.mj_forward(model, data)
+            _update_ground_markers(
+                model, data,
+                com_mocapid, l_mocapid, r_mocapid, line_mocapid,
+                line_geomid, left_id, right_id,
+            )
 
         viewer.sync()
 
@@ -213,6 +357,12 @@ def main():
                     help="First frame index (0-based)")
     ap.add_argument("--end", type=int, default=None,
                     help="Last frame index (exclusive)")
+    ap.add_argument("--left-ankle", type=str, default="left_ankle_roll_link",
+                    help="Body name of the left ankle/foot "
+                         "(auto-detected if not found)")
+    ap.add_argument("--right-ankle", type=str, default="right_ankle_roll_link",
+                    help="Body name of the right ankle/foot "
+                         "(auto-detected if not found)")
     args = ap.parse_args()
 
     csv_path = pathlib.Path(args.csv).resolve()
@@ -234,7 +384,9 @@ def main():
     print(f"Frames: {len(all_qpos)}  cols={7 + num_joints} "
           f"({num_joints} DOF)  (fps={fps})")
 
-    play_csv_in_mujoco(xml_path, all_qpos, fps, num_joints)
+    play_csv_in_mujoco(xml_path, all_qpos, fps, num_joints,
+                       left_ankle=args.left_ankle,
+                       right_ankle=args.right_ankle)
 
 
 if __name__ == "__main__":

@@ -12,11 +12,20 @@
 #   bash runs/run_retargeting_visualizer.sh --load cache.pkl         (replay)
 #   bash runs/run_retargeting_visualizer.sh --no-panel-b             (web only)
 
+# conda run -n gmr python tools/retargeting_visualizer/visualize_retargeting.py \
+#   --xml assets/D20_29dof/mjcf/D20_fz.xml \
+#   --bvh datas/fz/dance_13.bvh \
+#   --ik_config general_motion_retargeting/ik_configs/bvh_fz_motion_to_d20.json \
+#   --bvh-scale 1.0 \
+#   --save outputs/d20_29dof/fz_dance_13.pkl \
+#   --save-csv outputs/d20_29dof/fz_dance_13.csv \
+#   "$@"
+
 conda run -n gmr python tools/retargeting_visualizer/visualize_retargeting.py \
-  --xml assets/D20_29dof/mjcf/D20_fz.xml \
+  --xml assets/D20_29dof/mjcf/D20_fz_back_end.xml \
   --bvh datas/fz/dance_13.bvh \
-  --ik_config general_motion_retargeting/ik_configs/bvh_fz_motion_to_d20.json \
+  --ik_config general_motion_retargeting/ik_configs/bvh_fz_motion_to_d20_back_end.json \
   --bvh-scale 1.0 \
-  --save outputs/d20_29dof/fz_dance_13.pkl \
-  --save-csv outputs/d20_29dof/fz_dance_13.csv \
+  --save outputs/d20_29dof/fz_dance_13_back_end.pkl \
+  --save-csv outputs/d20_29dof/fz_dance_13_back_end.csv \
   "$@"
