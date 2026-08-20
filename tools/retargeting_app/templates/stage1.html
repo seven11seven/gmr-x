@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>GMR · Stage 1 — Links ↔ Bones</title>
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  <link rel="stylesheet" href="/static/app.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">GMR</span>
+      <div>
+        <h1>Stage 1 · 骨架对齐</h1>
+        <p>可视化机器人 links 与 BVH 骨骼，标定 mapping 与单位制</p>
+      </div>
+    </div>
+    <div class="stepper">
+      <span class="step active">1 Mapping / Scale</span>
+      <a class="step" href="/stage2">2 Offsets</a>
+      <span class="step">3 Weights</span>
+      <span class="step">4 Retarget</span>
+    </div>
+  </header>
+
+  <main class="layout">
+    <aside class="panel">
+      <section class="card">
+        <h2>输入文件</h2>
+        <label>Robot XML
+          <select id="xmlSelect"></select>
+        </label>
+        <label>BVH 文件
+          <select id="bvhSelect"></select>
+        </label>
+        <label>BVH 单位制
+          <select id="bvhUnit"></select>
+        </label>
+        <p class="hint" id="heightHint">加载后显示检测到的人体高度</p>
+        <label>加载已有 IK Config（可选）
+          <select id="configSelect">
+            <option value="">— 无 —</option>
+          </select>
+        </label>
+        <button id="btnLoad" class="primary">加载并可视化</button>
+      </section>
+
+      <section class="card">
+        <h2>根节点</h2>
+        <label>Robot root
+          <select id="robotRoot"></select>
+        </label>
+        <label>Human root
+          <select id="humanRoot"></select>
+        </label>
+      </section>
+
+      <section class="card grow">
+        <div class="card-head">
+          <h2>Link ↔ Bone Mapping</h2>
+          <button id="btnAddMap" class="ghost" type="button">+ 添加</button>
+        </div>
+        <div id="mappingList" class="mapping-list"></div>
+        <p class="hint">绿色 = 已映射 robot / 橙色 = 已映射 human</p>
+      </section>
+
+      <section class="card">
+        <h2>保存 Config</h2>
+        <label>文件名
+          <input id="saveName" type="text" value="stage1_xsens_to_d20.json" />
+        </label>
+        <label class="check">
+          <input id="saveToIk" type="checkbox" />
+          同时写入 <code>ik_configs/</code>
+        </label>
+        <div class="row">
+          <button id="btnPreview" class="ghost" type="button">预览 JSON</button>
+          <button id="btnSave" class="primary" type="button">保存</button>
+        </div>
+        <p class="status" id="saveStatus"></p>
+      </section>
+    </aside>
+
+    <section class="viewport">
+      <div id="plot"></div>
+      <div class="viewport-legend">
+        <span><i class="dot robot"></i> Robot links</span>
+        <span><i class="dot human"></i> BVH bones</span>
+        <span><i class="axis r"></i>X <i class="axis g"></i>Y <i class="axis b"></i>Z</span>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="jsonDialog">
+    <form method="dialog" class="dialog-body">
+      <h3>Config 预览</h3>
+      <pre id="jsonPreview"></pre>
+      <button value="close">关闭</button>
+    </form>
+  </dialog>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

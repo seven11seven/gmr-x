@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>GMR · Stage 2 — Scale & Offset</title>
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  <link rel="stylesheet" href="/static/app.css?v=stage2-18" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">GMR</span>
+      <div>
+        <h1>Stage 2 · Scale & Offset</h1>
+        <p>对齐根节点对比骨架，调节缩放与位置/旋转偏移</p>
+      </div>
+    </div>
+    <div class="stepper">
+      <a class="step" href="/">1 Mapping / Scale</a>
+      <span class="step active">2 Offsets</span>
+      <span class="step">3 Weights</span>
+      <span class="step">4 Retarget</span>
+    </div>
+  </header>
+
+  <main class="layout stage2-layout">
+    <!-- Column 1: load / translate / save -->
+    <aside class="panel panel-col">
+      <section class="card">
+        <h2>输入 / 重载</h2>
+        <label>Robot XML
+          <select id="xmlSelect"></select>
+        </label>
+        <label>BVH 文件
+          <select id="bvhSelect"></select>
+        </label>
+        <label>IK Config
+          <select id="configSelect"></select>
+        </label>
+        <label>BVH 单位制
+          <select id="bvhUnit"></select>
+        </label>
+        <p class="hint" id="heightHint">加载后显示身高与 ratio</p>
+        <div class="row">
+          <button id="btnReload" class="primary" type="button">重新加载并刷新</button>
+        </div>
+        <div class="row" style="margin-top:0.45rem;">
+          <button id="btnApply" class="ghost" type="button">应用当前参数</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>机器人平移（显示）</h2>
+        <p class="hint">根节点默认重合于原点；仅影响可视化，不写入 config</p>
+        <div class="translate-grid">
+          <button type="button" data-axis="y" data-dir="1" title="+Y 左">← Y+</button>
+          <button type="button" data-axis="x" data-dir="1" title="+X 前">↑ X+</button>
+          <button type="button" data-axis="y" data-dir="-1" title="-Y 右">→ Y-</button>
+          <button type="button" data-axis="x" data-dir="-1" title="-X 后">↓ X-</button>
+          <button type="button" data-axis="z" data-dir="1" title="+Z 上">Z+</button>
+          <button type="button" data-axis="z" data-dir="-1" title="-Z 下">Z-</button>
+        </div>
+        <div class="row" style="margin-top:0.5rem; align-items:center;">
+          <label style="margin:0; flex:1;">步长 (m)
+            <input id="transStep" type="text" value="0.05" />
+          </label>
+          <button id="btnTransReset" class="ghost" type="button">复位</button>
+        </div>
+        <p class="hint" id="transPos">(0.00, 0.00, 0.00)</p>
+      </section>
+
+      <section class="card">
+        <h2>保存 Config</h2>
+        <label>文件名
+          <input id="saveName" type="text" value="stage2_xsens_to_d20.json" />
+        </label>
+        <label class="check">
+          <input id="overwriteSrc" type="checkbox" checked />
+          覆盖当前打开的 config 目录
+        </label>
+        <label class="check">
+          <input id="saveToIk" type="checkbox" />
+          写入 <code>ik_configs/</code>
+        </label>
+        <div class="row">
+          <button id="btnPreview" class="ghost" type="button">预览</button>
+          <button id="btnSave" class="primary" type="button">保存</button>
+        </div>
+        <p class="status" id="saveStatus"></p>
+      </section>
+    </aside>
+
+    <!-- Column 2: Scale -->
+    <aside class="panel panel-col">
+      <section class="card card-fill">
+        <div class="card-head">
+          <h2>Scale 参数</h2>
+          <span class="hint" style="margin:0;">V / H</span>
+        </div>
+        <div id="scaleList" class="param-list param-list-fill"></div>
+      </section>
+    </aside>
+
+    <!-- Column 3: Offset -->
+    <aside class="panel panel-col">
+      <section class="card card-fill">
+        <div class="card-head">
+          <h2>Offset 参数</h2>
+          <span class="hint" style="margin:0;">xyz + 旋转矩阵</span>
+        </div>
+        <div class="row" style="margin-bottom:0.55rem;">
+          <button id="btnApplyOffset" class="primary" type="button">应用 Offset 并刷新</button>
+        </div>
+        <p class="hint" style="margin-top:0;">改完位移/旋转矩阵后点此按钮更新可视化（不自动刷新）</p>
+        <div id="offsetList" class="param-list param-list-fill"></div>
+      </section>
+    </aside>
+
+    <!-- Visualization: remaining space -->
+    <section class="viewport">
+      <div id="plot"></div>
+      <div class="viewport-legend">
+        <span><i class="dot robot"></i> Robot（可平移）</span>
+        <span><i class="dot human"></i> Human（scale+offset）</span>
+        <span>根节点对齐于原点</span>
+      </div>
+    </section>
+  </main>
+
+  <dialog id="jsonDialog">
+    <form method="dialog" class="dialog-body">
+      <h3>Config 预览</h3>
+      <pre id="jsonPreview"></pre>
+      <button value="close">关闭</button>
+    </form>
+  </dialog>
+
+  <script src="/static/stage2.js?v=stage2-18"></script>
+</body>
+</html>
