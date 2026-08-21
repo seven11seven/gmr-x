@@ -520,6 +520,20 @@ a.step:hover { border-color: #3d6f9c; color: var(--text); }
   .stage3-viewport { min-height: 45vh; }
 }
 
+.progress-wrap {
+  margin-top: 0.55rem;
+  height: 6px;
+  border-radius: 999px;
+  background: #1a222c;
+  overflow: hidden;
+}
+.progress-bar {
+  height: 100%;
+  width: 0%;
+  background: linear-gradient(90deg, #2ca02c, #3d9cf0);
+  transition: width 0.25s ease;
+}
+
 @media (max-width: 900px) {
   .layout { grid-template-columns: 1fr; grid-template-rows: auto 55vh; }
   .panel { border-right: none; border-bottom: 1px solid var(--line); max-height: 48vh; }

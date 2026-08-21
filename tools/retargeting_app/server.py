@@ -50,6 +50,7 @@ from tools.retargeting_app.stage3_logic import (  # noqa: E402
     merge_stage3_weights,
     run_preview_retarget,
 )
+from tools.retargeting_app import stage4_logic as stage4  # noqa: E402
 
 app = Flask(
     __name__,
@@ -82,6 +83,11 @@ def stage2_page():
 @app.get("/stage3")
 def stage3_page():
     return render_template("stage3.html")
+
+
+@app.get("/stage4")
+def stage4_page():
+    return render_template("stage4.html")
 
 
 @app.get("/api/meta")
@@ -467,6 +473,102 @@ def api_stage3_save():
         return jsonify({"ok": False, "error": str(exc)}), 400
 
 
+# ---------------------------------------------------------------------------
+# Stage-4 APIs: full-trajectory retarget + MuJoCo sync
+# ---------------------------------------------------------------------------
+
+@app.post("/api/stage4/retarget")
+def api_stage4_retarget():
+    """Start async full-trajectory retarget (+ MuJoCo viewer)."""
+    try:
+        payload = request.get_json(force=True) or {}
+        xml = payload.get("xml") or DEFAULT_XML
+        bvh = payload.get("bvh") or DEFAULT_BVH
+        config_path = payload.get("config_path")
+
+        if payload.get("config"):
+            base_cfg = payload["config"]
+        elif config_path:
+            base_cfg = load_config_file(config_path)
+        else:
+            base_cfg = load_config_file(DEFAULT_STAGE2_CONFIG)
+            config_path = DEFAULT_STAGE2_CONFIG
+
+        cfg = merge_stage3_weights(base_cfg, payload.get("weight_rows"))
+        if payload.get("bvh_unit") is not None:
+            unit = int(payload["bvh_unit"])
+            if unit in BVH_UNIT_OPTIONS:
+                cfg["bvh_unit"] = unit
+                cfg["bvh_scale"] = float(BVH_UNIT_OPTIONS[unit]["scale"])
+
+        result = stage4.start_retarget_job(
+            xml_path=xml,
+            bvh_path=bvh,
+            config=cfg,
+            bvh_unit=cfg.get("bvh_unit"),
+            max_frames=payload.get("max_frames"),
+        )
+        if not result.get("ok"):
+            return jsonify(result), 400
+        return jsonify({**result, "config_path": config_path, "config": cfg})
+    except Exception as exc:
+        traceback.print_exc()
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@app.get("/api/stage4/status")
+def api_stage4_status():
+    return jsonify(stage4.get_job_status())
+
+
+@app.get("/api/stage4/frames")
+def api_stage4_frames():
+    """Return web skeleton frames for the current Stage-4 session."""
+    try:
+        meta = stage4.get_session_meta()
+        frames = stage4.get_web_frames()
+        if not meta.get("ready") or frames is None:
+            return jsonify({"ok": False, "error": "no session — run retarget first"}), 400
+        with stage4._lock:
+            cfg = stage4._session.get("config") if stage4._session else None
+        return jsonify({
+            "ok": True,
+            "config": cfg,
+            "n_frames": meta["n_frames"],
+            "fps": meta["fps"],
+            "xml_path": meta.get("xml_path"),
+            "bvh_path": meta.get("bvh_path"),
+            "actual_human_height": meta.get("actual_human_height"),
+            "weight_rows": meta.get("weight_rows"),
+            "robot_edges": meta.get("robot_edges"),
+            "human_edges": meta.get("human_edges"),
+            "viewer_alive": meta.get("viewer_alive"),
+            "viewer_error": meta.get("viewer_error"),
+            "frames": frames,
+        })
+    except Exception as exc:
+        traceback.print_exc()
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@app.post("/api/stage4/sync")
+def api_stage4_sync():
+    """Sync MuJoCo viewer to a frame index (and optional play flag)."""
+    try:
+        payload = request.get_json(force=True) or {}
+        if "frame_idx" in payload:
+            stage4.set_frame_idx(int(payload["frame_idx"]))
+        if "playing" in payload:
+            stage4.set_playing(bool(payload["playing"]))
+        meta = stage4.get_session_meta()
+        return jsonify({"ok": True, **{k: meta[k] for k in (
+            "frame_idx", "playing", "viewer_alive", "n_frames", "fps",
+        ) if k in meta}})
+    except Exception as exc:
+        traceback.print_exc()
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
 def main():
     ap = argparse.ArgumentParser(description="GMR retargeting config web app")
     ap.add_argument("--host", default="127.0.0.1")
@@ -477,8 +579,10 @@ def main():
     print(f"  Stage-1: http://{args.host}:{args.port}/")
     print(f"  Stage-2: http://{args.host}:{args.port}/stage2")
     print(f"  Stage-3: http://{args.host}:{args.port}/stage3")
+    print(f"  Stage-4: http://{args.host}:{args.port}/stage4")
     print(f"Project root: {_PROJECT_ROOT}")
-    app.run(host=args.host, port=args.port, debug=args.debug)
+    # threaded: allow /sync while retarget job + MuJoCo viewer run
+    app.run(host=args.host, port=args.port, debug=args.debug, threaded=True)
 
 
 if __name__ == "__main__":
