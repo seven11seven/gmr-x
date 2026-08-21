@@ -1,5 +1,0 @@
-xsens:
-  udp:
-    port : 9763
-    buffer_size : 4096
-    stream_freq : 120

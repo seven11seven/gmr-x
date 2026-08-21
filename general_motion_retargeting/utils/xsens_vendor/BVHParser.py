@@ -428,19 +428,9 @@ class BVHParser:
         return quats, positions, offsets, parents
 
     def bias_edit(self, rotations, positions):
-        import sys
-        from PyQt6.QtWidgets import QApplication
-        from general_motion_retargeting.utils.xsens_vendor.bvh_edit.CurveEditor import (
-            CurveEditorWindow,
+        raise NotImplementedError(
+            "BVH bias_edit UI (CurveEditor) was removed; use retargeting_app for config tuning."
         )
-
-        # 示例数据：假设解析了BVH数据
-        app = QApplication(sys.argv)
-        window = CurveEditorWindow(self.names, rotations, parser=self)
-        window.show()
-        # app.exec()
-        # sys.exit(app.exec())
-        return window
 
     def compensate_displacements(self, quaternions, displacements):
         """

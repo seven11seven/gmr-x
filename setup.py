@@ -23,10 +23,10 @@ setup(
     "opencv-python",
     "natsort",
     "psutil",
-    "smplx @ git+https://github.com/vchoutas/smplx",
     "protobuf",
     "redis[hiredis]",
     "imageio[ffmpeg]",
+    "flask",
   ],
   python_requires='>=3.10',
 )
