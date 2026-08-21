@@ -3,28 +3,30 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>GMR · Stage 4 — Full Retarget</title>
+  <title>GMR · Stage 4 — Weights</title>
   <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
-  <link rel="stylesheet" href="/static/app.css?v=stage4-1" />
+  <link rel="stylesheet" href="/static/app.css?v=stage4-w1" />
 </head>
 <body>
   <header class="topbar">
     <div class="brand">
       <span class="brand-mark">GMR</span>
       <div>
-        <h1>Stage 4 · Full Retarget</h1>
-        <p>全轨迹重定向 · Web 骨架 + MuJoCo mesh 同步预览</p>
+        <h1>Stage 4 · Weights</h1>
+        <p>调整 pos / rot 权重，预览前 50 帧重定向结果</p>
       </div>
     </div>
     <div class="stepper">
       <a class="step" href="/">1 Mapping</a>
       <a class="step" href="/stage2">2 Scale / Offset</a>
-      <a class="step" href="/stage3">3 Weights</a>
-      <span class="step active">4 Retarget</span>
+      <a class="step" href="/stage3">3 Aux</a>
+      <span class="step active">4 Weights</span>
+      <a class="step" href="/stage5">5 Retarget</a>
     </div>
   </header>
 
   <main class="layout stage3-layout">
+    <!-- Column 1: 0 ~ 1/6 -->
     <aside class="panel panel-col">
       <section class="card">
         <h2>输入 / 重载</h2>
@@ -40,14 +42,17 @@
         <label>BVH 单位制
           <select id="bvhUnit"></select>
         </label>
+        <label>预览帧数
+          <input id="maxFrames" type="number" min="1" max="200" value="50" />
+        </label>
         <div class="row">
           <button id="btnReload" class="primary" type="button">重新加载 Config</button>
         </div>
       </section>
 
       <section class="card">
-        <h2>机器人平移（Web 显示）</h2>
-        <p class="hint">仅影响网页骨架，不写入 config / 不影响 MuJoCo</p>
+        <h2>机器人平移（显示）</h2>
+        <p class="hint">仅影响可视化，不写入 config</p>
         <div class="translate-grid">
           <button type="button" data-axis="y" data-dir="1">← Y+</button>
           <button type="button" data-axis="x" data-dir="1">↑ X+</button>
@@ -85,31 +90,26 @@
       </section>
 
       <section class="card">
-        <h2>全轨迹重定向</h2>
-        <p class="hint">对 BVH 全部帧做 IK，并启动 MuJoCo viewer（mesh + 人类关键点）</p>
+        <h2>重定向预览</h2>
+        <p class="hint">使用当前权重，对前 N 帧做 IK 重定向并显示</p>
         <button id="btnRetarget" class="primary" type="button">开始重定向并显示</button>
-        <div class="row" style="margin-top:0.5rem; gap:0.4rem;">
-          <button id="btnPlay" class="ghost" type="button" disabled>播放</button>
-          <button id="btnPause" class="ghost" type="button" disabled>暂停</button>
-        </div>
         <p class="hint" id="retargetHint" style="margin-top:0.45rem;"></p>
-        <div id="progressWrap" class="progress-wrap" hidden>
-          <div id="progressBar" class="progress-bar"></div>
-        </div>
       </section>
     </aside>
 
+    <!-- Column 2: 1/6 ~ 1/3 -->
     <aside class="panel panel-col">
       <section class="card card-fill">
         <div class="card-head">
           <h2>权重分配</h2>
           <span class="hint" style="margin:0;">pos / rot</span>
         </div>
-        <p class="hint">改权重后需重新「开始重定向」才会更新</p>
+        <p class="hint">改权重后需重新「开始重定向」才会更新画面</p>
         <div id="weightList" class="param-list param-list-fill"></div>
       </section>
     </aside>
 
+    <!-- Column 3: 1/3 ~ 1 -->
     <section class="viewport stage3-viewport">
       <div id="plot"></div>
       <div class="frame-bar">
@@ -121,6 +121,6 @@
     </section>
   </main>
 
-  <script src="/static/stage4.js?v=stage4-2"></script>
+  <script src="/static/stage4.js?v=stage4-w1"></script>
 </body>
 </html>

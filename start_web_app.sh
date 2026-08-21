@@ -53,8 +53,9 @@ echo "  python  : ${PYTHON_CMD[*]}"
 echo "  url     : http://${HOST}:${PORT}"
 echo "  Stage-1 : http://${HOST}:${PORT}/"
 echo "  Stage-2 : http://${HOST}:${PORT}/stage2"
-echo "  Stage-3 : http://${HOST}:${PORT}/stage3"
-echo "  Stage-4 : http://${HOST}:${PORT}/stage4"
+echo "  Stage-3 : http://${HOST}:${PORT}/stage3  (Aux)"
+echo "  Stage-4 : http://${HOST}:${PORT}/stage4  (Weights)"
+echo "  Stage-5 : http://${HOST}:${PORT}/stage5  (Retarget)"
 echo "  (Ctrl+C to stop)"
 echo
 

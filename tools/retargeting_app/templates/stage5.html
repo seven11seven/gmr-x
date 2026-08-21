@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>GMR · Stage 5 — Full Retarget</title>
+  <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+  <link rel="stylesheet" href="/static/app.css?v=stage5-1" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">GMR</span>
+      <div>
+        <h1>Stage 5 · Full Retarget</h1>
+        <p>全轨迹重定向 · Web 骨架 + MuJoCo mesh 同步预览</p>
+      </div>
+    </div>
+    <div class="stepper">
+      <a class="step" href="/">1 Mapping</a>
+      <a class="step" href="/stage2">2 Scale / Offset</a>
+      <a class="step" href="/stage3">3 Aux</a>
+      <a class="step" href="/stage4">4 Weights</a>
+      <span class="step active">5 Retarget</span>
+    </div>
+  </header>
+
+  <main class="layout stage3-layout">
+    <aside class="panel panel-col">
+      <section class="card">
+        <h2>输入 / 重载</h2>
+        <label>Robot XML
+          <select id="xmlSelect"></select>
+        </label>
+        <label>BVH 文件
+          <select id="bvhSelect"></select>
+        </label>
+        <label>IK Config
+          <select id="configSelect"></select>
+        </label>
+        <label>BVH 单位制
+          <select id="bvhUnit"></select>
+        </label>
+        <div class="row">
+          <button id="btnReload" class="primary" type="button">重新加载 Config</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>机器人平移（Web 显示）</h2>
+        <p class="hint">仅影响网页骨架，不写入 config / 不影响 MuJoCo</p>
+        <div class="translate-grid">
+          <button type="button" data-axis="y" data-dir="1">← Y+</button>
+          <button type="button" data-axis="x" data-dir="1">↑ X+</button>
+          <button type="button" data-axis="y" data-dir="-1">→ Y-</button>
+          <button type="button" data-axis="x" data-dir="-1">↓ X-</button>
+          <button type="button" data-axis="z" data-dir="1">Z+</button>
+          <button type="button" data-axis="z" data-dir="-1">Z-</button>
+        </div>
+        <div class="row" style="margin-top:0.5rem; align-items:center;">
+          <label style="margin:0; flex:1;">步长 (m)
+            <input id="transStep" type="text" value="0.05" />
+          </label>
+          <button id="btnTransReset" class="ghost" type="button">复位</button>
+        </div>
+        <p class="hint" id="transPos">(0.00, 0.00, 0.00)</p>
+      </section>
+
+      <section class="card">
+        <h2>保存 Config</h2>
+        <label>文件名
+          <input id="saveName" type="text" value="stage5_xsens_to_d20.json" />
+        </label>
+        <label class="check">
+          <input id="overwriteSrc" type="checkbox" checked />
+          覆盖当前打开的 config 目录
+        </label>
+        <label class="check">
+          <input id="saveToIk" type="checkbox" />
+          写入 <code>ik_configs/</code>
+        </label>
+        <div class="row">
+          <button id="btnSave" class="primary" type="button">保存</button>
+        </div>
+        <p class="status" id="saveStatus"></p>
+      </section>
+
+      <section class="card">
+        <h2>全轨迹重定向</h2>
+        <p class="hint">对 BVH 全部帧做 IK，并启动 MuJoCo viewer（mesh + 人类关键点）</p>
+        <button id="btnRetarget" class="primary" type="button">开始重定向并显示</button>
+        <div class="row" style="margin-top:0.5rem; gap:0.4rem;">
+          <button id="btnPlay" class="ghost" type="button" disabled>播放</button>
+          <button id="btnPause" class="ghost" type="button" disabled>暂停</button>
+        </div>
+        <p class="hint" id="retargetHint" style="margin-top:0.45rem;"></p>
+        <div id="progressWrap" class="progress-wrap" hidden>
+          <div id="progressBar" class="progress-bar"></div>
+        </div>
+      </section>
+    </aside>
+
+    <aside class="panel panel-col">
+      <section class="card card-fill">
+        <div class="card-head">
+          <h2>权重分配</h2>
+          <span class="hint" style="margin:0;">pos / rot</span>
+        </div>
+        <p class="hint">改权重后需重新「开始重定向」才会更新</p>
+        <div id="weightList" class="param-list param-list-fill"></div>
+      </section>
+    </aside>
+
+    <section class="viewport stage3-viewport">
+      <div id="plot"></div>
+      <div class="frame-bar">
+        <label class="frame-label">帧
+          <span id="frameIndex">0</span> / <span id="frameTotal">0</span>
+        </label>
+        <input id="frameSlider" type="range" min="0" max="0" value="0" step="1" />
+      </div>
+    </section>
+  </main>
+
+  <script src="/static/stage5.js?v=stage5-1"></script>
+</body>
+</html>

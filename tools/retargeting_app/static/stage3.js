@@ -1,21 +1,23 @@
-/* Stage-3: pos/rot weight tuning + short retarget preview */
+/* Stage-3: fine-tune aux_* local positions in robot XML */
 
 const state = {
   meta: null,
   config: null,
   configPath: null,
-  frames: [],
-  frameIdx: 0,
-  mode: "preview", // "preview" (scale+offset) | "retarget"
+  xmlPath: null,
+  auxRows: [],
+  robot: null,
+  human: null,
   robotOffset: [0, 0, 0],
   robotOrig: null,
   robotTraceIndices: null,
+  refreshTimer: null,
 };
 
 const AXIS_LEN = 0.05;
 const C_ROBOT = "#7faac9";
 const C_ROBOT_MAP = "#2ca02c";
-const C_HUMAN = "#ff9896";
+const C_AUX = "#f0c040";
 const C_HUMAN_MAP = "#ff7f0e";
 const C_BONE = "#888888";
 
@@ -62,6 +64,10 @@ async function init() {
 
   const cfgSel = $("configSelect");
   cfgSel.innerHTML = "";
+  const empty = document.createElement("option");
+  empty.value = "";
+  empty.textContent = "（不加载 config / 仅机器人）";
+  cfgSel.appendChild(empty);
   for (const c of state.meta.ik_configs) {
     const opt = document.createElement("option");
     opt.value = c.path;
@@ -71,25 +77,13 @@ async function init() {
   if (d.config && [...cfgSel.options].some((o) => o.value === d.config)) {
     cfgSel.value = d.config;
   }
-  if (cfgSel.value) $("saveName").value = cfgSel.value.split("/").pop();
 
-  cfgSel.addEventListener("change", () => {
-    $("saveName").value = cfgSel.value.split("/").pop() || "stage3_config.json";
-  });
-
-  $("btnReload").addEventListener("click", reloadWeights);
-  $("btnSave").addEventListener("click", saveConfig);
-  $("btnRetarget").addEventListener("click", runRetarget);
+  $("btnReload").addEventListener("click", () => reloadScene(true));
+  $("btnSave").addEventListener("click", saveXml);
   $("btnTransReset").addEventListener("click", () => {
     state.robotOffset = [0, 0, 0];
     applyRobotTranslate();
   });
-  $("frameSlider").addEventListener("input", () => {
-    state.frameIdx = Number($("frameSlider").value);
-    $("frameIndex").textContent = String(state.frameIdx);
-    drawCurrentFrame();
-  });
-
   document.querySelectorAll(".translate-grid button").forEach((btn) => {
     btn.addEventListener("click", () => {
       const axis = btn.dataset.axis;
@@ -101,10 +95,141 @@ async function init() {
     });
   });
 
-  await reloadWeights();
+  await reloadScene(true);
 }
 
-/** Bind once after Plotly has created the graph div. */
+function collectAuxPositions() {
+  const out = {};
+  for (const el of document.querySelectorAll("#auxList .aux-row[data-name]")) {
+    const name = el.dataset.name;
+    const xs = el.querySelectorAll("input.aux-xyz");
+    out[name] = [
+      Number(xs[0].value) || 0,
+      Number(xs[1].value) || 0,
+      Number(xs[2].value) || 0,
+    ];
+  }
+  return out;
+}
+
+function scheduleRefresh() {
+  if (state.refreshTimer) clearTimeout(state.refreshTimer);
+  state.refreshTimer = setTimeout(() => reloadScene(false), 180);
+}
+
+function flashAuxRow(name) {
+  const el = document.querySelector(
+    `#auxList .aux-row[data-name="${CSS.escape(name)}"]`,
+  );
+  if (!el) return;
+  el.classList.remove("flash");
+  void el.offsetWidth;
+  el.classList.add("flash");
+  el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  window.setTimeout(() => el.classList.remove("flash"), 900);
+}
+
+function renderAuxPanel(rows) {
+  const list = $("auxList");
+  list.innerHTML = "";
+  if (!rows?.length) {
+    list.innerHTML = `<p class="hint">当前 XML 中没有 aux_* 辅助点</p>`;
+    return;
+  }
+
+  const header = document.createElement("div");
+  header.className = "weight-row weight-header aux-row-head";
+  header.innerHTML = `<span class="name">aux link</span><span>x</span><span>y</span><span>z</span>`;
+  list.appendChild(header);
+
+  for (const row of rows) {
+    const el = document.createElement("div");
+    el.className = "weight-row aux-row";
+    el.dataset.name = row.name;
+    el.id = `aux-${row.name}`;
+
+    const nm = document.createElement("span");
+    nm.className = "name";
+    nm.title = row.parent ? `parent: ${row.parent}` : row.name;
+    nm.innerHTML = `${row.name}${
+      row.parent ? `<br><span class="sub">⊂ ${row.parent}</span>` : ""
+    }`;
+
+    const inputs = [0, 1, 2].map((i) => {
+      const ip = document.createElement("input");
+      ip.type = "number";
+      ip.step = "0.001";
+      ip.className = "aux-xyz";
+      ip.value = String(row.pos[i]);
+      ip.addEventListener("input", scheduleRefresh);
+      ip.addEventListener("change", scheduleRefresh);
+      return ip;
+    });
+
+    el.append(nm, ...inputs);
+    list.appendChild(el);
+  }
+}
+
+async function reloadScene(resetPanel) {
+  $("btnReload").disabled = true;
+  $("loadHint").textContent = "加载中…";
+  $("loadHint").style.color = "";
+  try {
+    state.xmlPath = $("xmlSelect").value;
+    state.configPath = $("configSelect").value || null;
+
+    let config = null;
+    if (state.configPath) {
+      const w = await fetchJSON("/api/stage4/weights", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ config_path: state.configPath }),
+      });
+      config = w.config;
+      state.config = config;
+      if (config?.bvh_unit != null) $("bvhUnit").value = String(config.bvh_unit);
+    } else {
+      state.config = null;
+    }
+
+    const aux_positions = resetPanel ? null : collectAuxPositions();
+    const data = await fetchJSON("/api/stage3/aux_scene", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        xml: state.xmlPath,
+        bvh: $("bvhSelect").value,
+        config_path: state.configPath,
+        config,
+        bvh_unit: Number($("bvhUnit").value),
+        aux_positions,
+      }),
+    });
+
+    state.robot = data.robot;
+    state.human = data.human;
+    state.auxRows = data.aux_rows || [];
+    state.xmlPath = data.xml_path || state.xmlPath;
+
+    if (resetPanel || !document.querySelector("#auxList .aux-row")) {
+      renderAuxPanel(state.auxRows);
+    }
+
+    if (resetPanel) state.robotOffset = [0, 0, 0];
+    drawScene();
+    const nAux = state.auxRows.length;
+    $("loadHint").textContent =
+      `已加载 ${nAux} 个 aux_* · ${state.human ? "含人类对比" : "仅机器人"}`;
+  } catch (err) {
+    $("loadHint").textContent = String(err.message || err);
+    $("loadHint").style.color = "#f07178";
+    setError(err);
+  } finally {
+    $("btnReload").disabled = false;
+  }
+}
+
 function ensurePlotClickHandler() {
   const plotDiv = $("plot");
   if (!plotDiv || plotDiv._gmrClickBound) return;
@@ -112,258 +237,17 @@ function ensurePlotClickHandler() {
   plotDiv.on("plotly_click", (ev) => {
     if (!ev?.points?.length) return;
     const pt = ev.points[0];
-    // curveNumber 0 = robot markers trace
     if (pt.curveNumber !== 0) return;
     const name = pt.text
       || (Array.isArray(pt.data?.text) ? pt.data.text[pt.pointIndex] : null);
-    if (name) flashWeightRow(name);
+    if (name && String(name).startsWith("aux_")) flashAuxRow(name);
   });
   plotDiv._gmrClickBound = true;
 }
 
-async function reloadWeights() {
-  $("btnReload").disabled = true;
-  $("saveStatus").textContent = "";
-  $("saveStatus").classList.remove("err");
-  try {
-    state.configPath = $("configSelect").value;
-    const data = await fetchJSON("/api/stage3/weights", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        config_path: state.configPath,
-      }),
-    });
-    state.config = data.config;
-    if (data.config?.bvh_unit != null) {
-      $("bvhUnit").value = String(data.config.bvh_unit);
-    }
-    state._pendingWeightRows = data.weight_rows || [];
-    $("retargetHint").textContent = "Config 已加载。正在加载 scale/offset 预览…";
-    await loadPreviewScene();
-    // Sort weights by robot XML DFS after we have edges from preview
-    const sorted = sortWeightsByRobotDfs(
-      state._pendingWeightRows,
-      state.frames[0]?.robot,
-      state.config?.robot_root_name,
-    );
-    renderWeightPanel(sorted);
-    $("retargetHint").textContent = "已显示 scale/offset 对比。点击机器人 link 可定位权重条目。";
-  } catch (err) {
-    setError(err);
-  } finally {
-    $("btnReload").disabled = false;
-  }
-}
-
-/** Load Stage-2 style scaled+offset skeleton into the viz (before retarget). */
-async function loadPreviewScene() {
-  const data = await fetchJSON("/api/stage2/scene", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      xml: $("xmlSelect").value,
-      bvh: $("bvhSelect").value,
-      config_path: state.configPath,
-      config: state.config,
-      bvh_unit: Number($("bvhUnit").value),
-    }),
-  });
-  const scene = data.scene;
-  state.config = data.config || state.config;
-  state.mode = "preview";
-  state.frames = [{
-    robot: scene.robot,
-    human: scene.human,
-  }];
-  state.frameIdx = 0;
-  state.robotOffset = [0, 0, 0];
-  $("frameTotal").textContent = "0";
-  $("frameIndex").textContent = "0";
-  const slider = $("frameSlider");
-  slider.min = "0";
-  slider.max = "0";
-  slider.value = "0";
-  slider.disabled = true;
-  drawCurrentFrame();
-}
-
-/** Depth-first order of robot bodies from parent→child edges (XML hierarchy). */
-function dfsBoneOrder(nodeNames, edges, rootName) {
-  const nameSet = new Set(nodeNames);
-  const children = new Map();
-  const hasParent = new Set();
-  for (const e of edges || []) {
-    const p = e[0], c = e[1];
-    if (!children.has(p)) children.set(p, []);
-    children.get(p).push(c);
-    hasParent.add(c);
-  }
-  // Preserve edge declaration order (MuJoCo XML order) — do not alpha-sort children
-
-  const order = [];
-  const visited = new Set();
-  function dfs(name) {
-    if (visited.has(name)) return;
-    visited.add(name);
-    order.push(name);
-    for (const ch of (children.get(name) || [])) dfs(ch);
-  }
-
-  if (rootName && nameSet.has(rootName)) dfs(rootName);
-  // Also try common roots if not already visited
-  for (const cand of ["world", "base_link", "aux_base", "pelvis"]) {
-    if (nameSet.has(cand)) dfs(cand);
-  }
-  for (const n of nodeNames) {
-    if (!hasParent.has(n)) dfs(n);
-  }
-  for (const n of nodeNames) dfs(n);
-  return order.filter((n) => nameSet.has(n));
-}
-
-function sortWeightsByRobotDfs(rows, robotSkel, rootName) {
-  if (!rows?.length) return rows || [];
-  if (!robotSkel?.nodes?.length) {
-    return rows.slice().sort((a, b) =>
-      String(a.robot_body).localeCompare(String(b.robot_body)));
-  }
-  const names = robotSkel.nodes.map((n) => n.name);
-  // Prefer parent field on nodes to build edges if edges missing
-  let edges = robotSkel.edges || [];
-  if ((!edges || !edges.length) && robotSkel.nodes.some((n) => n.parent)) {
-    edges = robotSkel.nodes
-      .filter((n) => n.parent)
-      .map((n) => [n.parent, n.name]);
-  }
-  const order = dfsBoneOrder(names, edges, rootName);
-  const idx = new Map(order.map((n, i) => [n, i]));
-  return rows.slice().sort((a, b) => {
-    const ia = idx.has(a.robot_body) ? idx.get(a.robot_body) : 1e9;
-    const ib = idx.has(b.robot_body) ? idx.get(b.robot_body) : 1e9;
-    if (ia !== ib) return ia - ib;
-    return String(a.robot_body).localeCompare(String(b.robot_body));
-  });
-}
-
-function flashWeightRow(robotName) {
-  const el = document.querySelector(
-    `#weightList .weight-row[data-robot="${CSS.escape(robotName)}"]`,
-  );
-  if (!el) return;
-  el.classList.remove("flash");
-  // restart animation
-  void el.offsetWidth;
-  el.classList.add("flash");
-  el.scrollIntoView({ behavior: "smooth", block: "nearest" });
-  window.setTimeout(() => el.classList.remove("flash"), 900);
-}
-
-function renderWeightPanel(rows) {
-  const list = $("weightList");
-  list.innerHTML = "";
-  if (!rows.length) {
-    list.innerHTML = `<p class="hint">当前 config 无 ik_match_table1 条目</p>`;
-    return;
-  }
-
-  const header = document.createElement("div");
-  header.className = "weight-row weight-header";
-  header.innerHTML = `<span class="name">robot → human</span><span>pos</span><span>rot</span>`;
-  list.appendChild(header);
-
-  for (const row of rows) {
-    const el = document.createElement("div");
-    el.className = "weight-row";
-    el.dataset.robot = row.robot_body;
-    el.dataset.human = row.human_bone;
-    el.id = `weight-${row.robot_body}`;
-
-    const nm = document.createElement("span");
-    nm.className = "name";
-    nm.title = `${row.robot_body} → ${row.human_bone}`;
-    nm.innerHTML = `${row.robot_body}<br><span class="sub">→ ${row.human_bone}</span>`;
-
-    const ip = document.createElement("input");
-    ip.type = "number";
-    ip.step = "1";
-    ip.min = "0";
-    ip.className = "pos-w";
-    ip.value = Number(row.pos_weight);
-
-    const ir = document.createElement("input");
-    ir.type = "number";
-    ir.step = "1";
-    ir.min = "0";
-    ir.className = "rot-w";
-    ir.value = Number(row.rot_weight);
-
-    el.append(nm, ip, ir);
-    list.appendChild(el);
-  }
-}
-function collectWeights() {
-  const rows = [];
-  for (const el of document.querySelectorAll("#weightList .weight-row[data-robot]")) {
-    rows.push({
-      robot_body: el.dataset.robot,
-      human_bone: el.dataset.human,
-      pos_weight: Number(el.querySelector(".pos-w").value),
-      rot_weight: Number(el.querySelector(".rot-w").value),
-    });
-  }
-  return rows;
-}
-
-async function runRetarget() {
-  $("btnRetarget").disabled = true;
-  $("retargetHint").textContent = "重定向计算中，请稍候…";
-  $("retargetHint").style.color = "";
-  $("saveStatus").classList.remove("err");
-  try {
-    const data = await fetchJSON("/api/stage3/retarget", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        xml: $("xmlSelect").value,
-        bvh: $("bvhSelect").value,
-        config_path: state.configPath,
-        config: state.config,
-        bvh_unit: Number($("bvhUnit").value),
-        max_frames: Number($("maxFrames").value) || 50,
-        weight_rows: collectWeights(),
-      }),
-    });
-    state.config = data.config;
-    state.frames = data.frames || [];
-    state.frameIdx = 0;
-    state.mode = "retarget";
-    state.robotOffset = [0, 0, 0];
-
-    const n = state.frames.length;
-    $("frameTotal").textContent = String(Math.max(n - 1, 0));
-    $("frameIndex").textContent = "0";
-    const slider = $("frameSlider");
-    slider.min = "0";
-    slider.max = String(Math.max(n - 1, 0));
-    slider.value = "0";
-    slider.disabled = n <= 1;
-
-    drawCurrentFrame();
-    $("retargetHint").textContent =
-      `完成：${n} 帧 @ ${data.fps?.toFixed?.(1) || data.fps} fps · 点击机器人 link 可定位权重`;
-  } catch (err) {
-    $("retargetHint").textContent = String(err.message || err);
-    $("retargetHint").style.color = "#f07178";
-    setError(err);
-  } finally {
-    $("btnRetarget").disabled = false;
-  }
-}
-
 function edgeSegments(nodesByName, edges, offset) {
   const xs = [], ys = [], zs = [];
-  for (const [a, b] of edges) {
+  for (const [a, b] of edges || []) {
     const pa = nodesByName[a];
     const pb = nodesByName[b];
     if (!pa || !pb) continue;
@@ -387,7 +271,7 @@ function axisSegments(nodes, offset) {
   const segs = { x: { x: [], y: [], z: [] }, y: { x: [], y: [], z: [] }, z: { x: [], y: [], z: [] } };
   const keys = ["x", "y", "z"];
   for (const n of nodes) {
-    const m = quatToMat(n.quat_wxyz);
+    const m = quatToMat(n.quat_wxyz || [1, 0, 0, 0]);
     const p = [n.pos[0] + offset[0], n.pos[1] + offset[1], n.pos[2] + offset[2]];
     for (let i = 0; i < 3; i++) {
       const end = [p[0] + m[0][i] * AXIS_LEN, p[1] + m[1][i] * AXIS_LEN, p[2] + m[2][i] * AXIS_LEN];
@@ -400,19 +284,19 @@ function axisSegments(nodes, offset) {
   return segs;
 }
 
-function drawCurrentFrame() {
-  if (!state.frames.length) {
+function drawScene() {
+  if (!state.robot?.nodes?.length) {
     Plotly.purge("plot");
     return;
   }
-  const frame = state.frames[state.frameIdx];
-  const robotNodes = frame.robot.nodes;
-  const humanNodes = frame.human.nodes;
+  const robotNodes = state.robot.nodes;
+  const humanNodes = state.human?.nodes || [];
   const robotByName = Object.fromEntries(robotNodes.map((n) => [n.name, n]));
   const humanByName = Object.fromEntries(humanNodes.map((n) => [n.name, n]));
 
   const traces = [];
   const robotTraceStart = 0;
+  const colors = robotNodes.map((n) => (n.is_aux ? C_AUX : C_ROBOT_MAP));
 
   traces.push({
     type: "scatter3d", mode: "markers+text", name: "robot",
@@ -423,20 +307,21 @@ function drawCurrentFrame() {
     text: robotNodes.map((n) => n.name),
     textposition: "top center",
     textfont: { size: 8, color: "#dce6f0" },
-    marker: { size: 4, color: C_ROBOT_MAP, line: { width: 1, color: "#111" } },
+    marker: { size: 4, color: colors, line: { width: 1, color: "#111" } },
     hovertemplate: "<b>%{text}</b><br>robot<br>(%{x:.3f}, %{y:.3f}, %{z:.3f})<extra></extra>",
   });
 
-  const rEdges = edgeSegments(robotByName, frame.robot.edges, [0, 0, 0]);
+  const rEdges = edgeSegments(robotByName, state.robot.edges, [0, 0, 0]);
   traces.push({
     type: "scatter3d", mode: "lines", name: "robot bones", legendgroup: "robot",
     x: rEdges.x, y: rEdges.y, z: rEdges.z,
     line: { color: C_BONE, width: 3 }, hoverinfo: "skip",
   });
 
-  const rAxes = axisSegments(robotNodes, [0, 0, 0]);
+  const auxNodes = robotNodes.filter((n) => n.is_aux);
+  const rAxes = axisSegments(auxNodes.length ? auxNodes : robotNodes, [0, 0, 0]);
   for (const [key, color, label] of [
-    ["x", "#e74c3c", "robot X"], ["y", "#27ae60", "robot Y"], ["z", "#3498db", "robot Z"],
+    ["x", "#e74c3c", "aux X"], ["y", "#27ae60", "aux Y"], ["z", "#3498db", "aux Z"],
   ]) {
     traces.push({
       type: "scatter3d", mode: "lines", name: label,
@@ -447,35 +332,24 @@ function drawCurrentFrame() {
   }
   const robotTraceEnd = traces.length;
 
-  traces.push({
-    type: "scatter3d", mode: "markers+text", name: "human target",
-    legendgroup: "human",
-    x: humanNodes.map((n) => n.pos[0]),
-    y: humanNodes.map((n) => n.pos[1]),
-    z: humanNodes.map((n) => n.pos[2]),
-    text: humanNodes.map((n) => n.name),
-    textposition: "top center",
-    textfont: { size: 8, color: "#f5e6d8" },
-    marker: { size: 4, color: C_HUMAN_MAP, line: { width: 1, color: "#111" } },
-    hovertemplate: "<b>%{text}</b><br>human<br>(%{x:.3f}, %{y:.3f}, %{z:.3f})<extra></extra>",
-  });
-
-  const hEdges = edgeSegments(humanByName, frame.human.edges, [0, 0, 0]);
-  traces.push({
-    type: "scatter3d", mode: "lines", name: "human bones", legendgroup: "human",
-    x: hEdges.x, y: hEdges.y, z: hEdges.z,
-    line: { color: "#c07040", width: 3 }, hoverinfo: "skip",
-  });
-
-  const hAxes = axisSegments(humanNodes, [0, 0, 0]);
-  for (const [key, color, label] of [
-    ["x", "#e74c3c", "human X"], ["y", "#27ae60", "human Y"], ["z", "#3498db", "human Z"],
-  ]) {
+  if (humanNodes.length) {
     traces.push({
-      type: "scatter3d", mode: "lines", name: label,
-      legendgroup: "human_axes", showlegend: key === "x",
-      x: hAxes[key].x, y: hAxes[key].y, z: hAxes[key].z,
-      line: { color, width: 2, dash: "dot" }, hoverinfo: "skip",
+      type: "scatter3d", mode: "markers+text", name: "human",
+      legendgroup: "human",
+      x: humanNodes.map((n) => n.pos[0]),
+      y: humanNodes.map((n) => n.pos[1]),
+      z: humanNodes.map((n) => n.pos[2]),
+      text: humanNodes.map((n) => n.name),
+      textposition: "top center",
+      textfont: { size: 8, color: "#f5e6d8" },
+      marker: { size: 4, color: C_HUMAN_MAP, line: { width: 1, color: "#111" } },
+      hovertemplate: "<b>%{text}</b><br>human<br>(%{x:.3f}, %{y:.3f}, %{z:.3f})<extra></extra>",
+    });
+    const hEdges = edgeSegments(humanByName, state.human.edges || [], [0, 0, 0]);
+    traces.push({
+      type: "scatter3d", mode: "lines", name: "human bones", legendgroup: "human",
+      x: hEdges.x, y: hEdges.y, z: hEdges.z,
+      line: { color: "#c07040", width: 3 }, hoverinfo: "skip",
     });
   }
 
@@ -498,12 +372,7 @@ function drawCurrentFrame() {
     plot_bgcolor: "#0b0f14",
     font: { color: "#c5d0dc", family: "IBM Plex Sans, sans-serif" },
     margin: { l: 0, r: 0, t: 36, b: 0 },
-    title: {
-      text: state.mode === "retarget"
-        ? `Retarget Frame ${state.frameIdx} / ${Math.max(state.frames.length - 1, 0)}`
-        : "Preview · scale + offset（未重定向）",
-      font: { size: 13 },
-    },
+    title: { text: "Aux link fine-tune · 黄点 = aux_*", font: { size: 13 } },
     scene: {
       xaxis: { title: "X", range: [center[0] - extent, center[0] + extent], backgroundcolor: "#0b0f14", gridcolor: "#243040" },
       yaxis: { title: "Y", range: [center[1] - extent, center[1] + extent], backgroundcolor: "#0b0f14", gridcolor: "#243040" },
@@ -515,7 +384,7 @@ function drawCurrentFrame() {
       bgcolor: "rgba(20,26,34,0.85)", bordercolor: "#2c3642",
       font: { size: 11 }, x: 0.01, y: 0.99,
     },
-    uirevision: "gmr-stage3",
+    uirevision: "gmr-stage3-aux",
   };
 
   Plotly.react("plot", traces, layout, {
@@ -523,7 +392,6 @@ function drawCurrentFrame() {
     displaylogo: false,
     modeBarButtonsToRemove: ["toImage", "lasso2d", "select2d"],
   });
-
   ensurePlotClickHandler();
 
   state.robotOrig = [];
@@ -555,36 +423,34 @@ function applyRobotTranslate() {
   Plotly.restyle("plot", { x: newX, y: newY, z: newZ }, state.robotTraceIndices);
 }
 
-async function saveConfig() {
+async function saveXml() {
   $("saveStatus").classList.remove("err");
   try {
-    const data = await fetchJSON("/api/stage3/config/save", {
+    const overwrite = $("overwriteXml").checked;
+    let dest = null;
+    if (!overwrite) {
+      const name = $("saveName").value.trim();
+      if (!name) throw new Error("请填写另存文件名，或勾选覆盖当前 XML");
+      const src = state.xmlPath || $("xmlSelect").value;
+      const dir = src.includes("/") ? src.split("/").slice(0, -1).join("/") : "assets";
+      dest = `${dir}/${name.endsWith(".xml") ? name : name + ".xml"}`;
+    }
+    const data = await fetchJSON("/api/stage3/aux_save", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        config_path: state.configPath,
-        base_config: state.config,
-        filename: $("saveName").value.trim() || "stage3_config.json",
-        overwrite: $("overwriteSrc").checked,
-        save_to_ik_configs: $("saveToIk").checked,
-        weight_rows: collectWeights(),
+        xml: state.xmlPath || $("xmlSelect").value,
+        dest_path: dest,
+        aux_positions: collectAuxPositions(),
       }),
     });
     $("saveStatus").textContent = `已保存: ${data.path}`;
-    state.config = data.config;
-    state.configPath = data.path;
-
-    state.meta = await fetchJSON("/api/meta");
-    const cur = data.path;
-    const cfgSel = $("configSelect");
-    cfgSel.innerHTML = "";
-    for (const c of state.meta.ik_configs) {
-      const opt = document.createElement("option");
-      opt.value = c.path;
-      opt.textContent = `${c.name}  (${c.dir})`;
-      cfgSel.appendChild(opt);
+    if (data.path) {
+      state.xmlPath = data.path;
+      // refresh xml list if new file
+      state.meta = await fetchJSON("/api/meta");
+      fillSelect($("xmlSelect"), state.meta.xml_files, "path", (x) => x.path, data.path);
     }
-    if ([...cfgSel.options].some((o) => o.value === cur)) cfgSel.value = cur;
   } catch (err) {
     setError(err);
   }

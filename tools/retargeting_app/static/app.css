@@ -513,6 +513,15 @@ a.step:hover { border-color: #3d6f9c; color: var(--text); }
   }
 }
 
+/* Stage-3 aux editor: name + x/y/z */
+.aux-row,
+.aux-row-head {
+  grid-template-columns: 1fr 72px 72px 72px;
+}
+.aux-row input.aux-xyz {
+  font-variant-numeric: tabular-nums;
+}
+
 @media (max-width: 900px) {
   .layout.stage3-layout {
     grid-template-columns: 1fr;

@@ -1,26 +1,21 @@
-/* Stage-4: full-trajectory retarget + MuJoCo frame sync */
+/* Stage-3: pos/rot weight tuning + short retarget preview */
 
 const state = {
   meta: null,
   config: null,
   configPath: null,
   frames: [],
-  robotEdges: [],
-  humanEdges: [],
   frameIdx: 0,
-  mode: "preview",
+  mode: "preview", // "preview" (scale+offset) | "retarget"
   robotOffset: [0, 0, 0],
   robotOrig: null,
   robotTraceIndices: null,
-  fps: 30,
-  playing: false,
-  playTimer: null,
-  pollTimer: null,
-  jobId: null,
 };
 
 const AXIS_LEN = 0.05;
+const C_ROBOT = "#7faac9";
 const C_ROBOT_MAP = "#2ca02c";
+const C_HUMAN = "#ff9896";
 const C_HUMAN_MAP = "#ff7f0e";
 const C_BONE = "#888888";
 
@@ -85,14 +80,14 @@ async function init() {
   $("btnReload").addEventListener("click", reloadWeights);
   $("btnSave").addEventListener("click", saveConfig);
   $("btnRetarget").addEventListener("click", runRetarget);
-  $("btnPlay").addEventListener("click", () => setPlaying(true));
-  $("btnPause").addEventListener("click", () => setPlaying(false));
   $("btnTransReset").addEventListener("click", () => {
     state.robotOffset = [0, 0, 0];
     applyRobotTranslate();
   });
   $("frameSlider").addEventListener("input", () => {
-    goToFrame(Number($("frameSlider").value), true);
+    state.frameIdx = Number($("frameSlider").value);
+    $("frameIndex").textContent = String(state.frameIdx);
+    drawCurrentFrame();
   });
 
   document.querySelectorAll(".translate-grid button").forEach((btn) => {
@@ -109,6 +104,7 @@ async function init() {
   await reloadWeights();
 }
 
+/** Bind once after Plotly has created the graph div. */
 function ensurePlotClickHandler() {
   const plotDiv = $("plot");
   if (!plotDiv || plotDiv._gmrClickBound) return;
@@ -116,6 +112,7 @@ function ensurePlotClickHandler() {
   plotDiv.on("plotly_click", (ev) => {
     if (!ev?.points?.length) return;
     const pt = ev.points[0];
+    // curveNumber 0 = robot markers trace
     if (pt.curveNumber !== 0) return;
     const name = pt.text
       || (Array.isArray(pt.data?.text) ? pt.data.text[pt.pointIndex] : null);
@@ -130,10 +127,12 @@ async function reloadWeights() {
   $("saveStatus").classList.remove("err");
   try {
     state.configPath = $("configSelect").value;
-    const data = await fetchJSON("/api/stage3/weights", {
+    const data = await fetchJSON("/api/stage4/weights", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ config_path: state.configPath }),
+      body: JSON.stringify({
+        config_path: state.configPath,
+      }),
     });
     state.config = data.config;
     if (data.config?.bvh_unit != null) {
@@ -142,14 +141,14 @@ async function reloadWeights() {
     state._pendingWeightRows = data.weight_rows || [];
     $("retargetHint").textContent = "Config 已加载。正在加载 scale/offset 预览…";
     await loadPreviewScene();
+    // Sort weights by robot XML DFS after we have edges from preview
     const sorted = sortWeightsByRobotDfs(
       state._pendingWeightRows,
       state.frames[0]?.robot,
       state.config?.robot_root_name,
     );
     renderWeightPanel(sorted);
-    $("retargetHint").textContent =
-      "已显示 scale/offset 对比。点击「开始重定向并显示」处理全轨迹。";
+    $("retargetHint").textContent = "已显示 scale/offset 对比。点击机器人 link 可定位权重条目。";
   } catch (err) {
     setError(err);
   } finally {
@@ -157,6 +156,7 @@ async function reloadWeights() {
   }
 }
 
+/** Load Stage-2 style scaled+offset skeleton into the viz (before retarget). */
 async function loadPreviewScene() {
   const data = await fetchJSON("/api/stage2/scene", {
     method: "POST",
@@ -172,17 +172,12 @@ async function loadPreviewScene() {
   const scene = data.scene;
   state.config = data.config || state.config;
   state.mode = "preview";
-  state.robotEdges = scene.robot?.edges || [];
-  state.humanEdges = scene.human?.edges || [];
   state.frames = [{
-    robot: { nodes: scene.robot.nodes },
-    human: { nodes: scene.human.nodes },
+    robot: scene.robot,
+    human: scene.human,
   }];
   state.frameIdx = 0;
   state.robotOffset = [0, 0, 0];
-  stopLocalPlay();
-  $("btnPlay").disabled = true;
-  $("btnPause").disabled = true;
   $("frameTotal").textContent = "0";
   $("frameIndex").textContent = "0";
   const slider = $("frameSlider");
@@ -193,6 +188,7 @@ async function loadPreviewScene() {
   drawCurrentFrame();
 }
 
+/** Depth-first order of robot bodies from parent→child edges (XML hierarchy). */
 function dfsBoneOrder(nodeNames, edges, rootName) {
   const nameSet = new Set(nodeNames);
   const children = new Map();
@@ -203,34 +199,38 @@ function dfsBoneOrder(nodeNames, edges, rootName) {
     children.get(p).push(c);
     hasParent.add(c);
   }
-  let root = rootName && nameSet.has(rootName) ? rootName : null;
-  if (!root) {
-    for (const n of nodeNames) {
-      if (!hasParent.has(n)) { root = n; break; }
-    }
-  }
-  if (!root && nodeNames.length) root = nodeNames[0];
+  // Preserve edge declaration order (MuJoCo XML order) — do not alpha-sort children
+
   const order = [];
-  const seen = new Set();
-  function dfs(n) {
-    if (seen.has(n)) return;
-    seen.add(n);
-    order.push(n);
-    for (const c of children.get(n) || []) dfs(c);
+  const visited = new Set();
+  function dfs(name) {
+    if (visited.has(name)) return;
+    visited.add(name);
+    order.push(name);
+    for (const ch of (children.get(name) || [])) dfs(ch);
   }
-  if (root) dfs(root);
+
+  if (rootName && nameSet.has(rootName)) dfs(rootName);
+  // Also try common roots if not already visited
+  for (const cand of ["world", "base_link", "aux_base", "pelvis"]) {
+    if (nameSet.has(cand)) dfs(cand);
+  }
+  for (const n of nodeNames) {
+    if (!hasParent.has(n)) dfs(n);
+  }
   for (const n of nodeNames) dfs(n);
-  return order;
+  return order.filter((n) => nameSet.has(n));
 }
 
 function sortWeightsByRobotDfs(rows, robotSkel, rootName) {
-  if (!rows?.length) return [];
+  if (!rows?.length) return rows || [];
   if (!robotSkel?.nodes?.length) {
-    return [...rows].sort((a, b) =>
+    return rows.slice().sort((a, b) =>
       String(a.robot_body).localeCompare(String(b.robot_body)));
   }
   const names = robotSkel.nodes.map((n) => n.name);
-  let edges = robotSkel.edges || state.robotEdges || [];
+  // Prefer parent field on nodes to build edges if edges missing
+  let edges = robotSkel.edges || [];
   if ((!edges || !edges.length) && robotSkel.nodes.some((n) => n.parent)) {
     edges = robotSkel.nodes
       .filter((n) => n.parent)
@@ -238,7 +238,7 @@ function sortWeightsByRobotDfs(rows, robotSkel, rootName) {
   }
   const order = dfsBoneOrder(names, edges, rootName);
   const idx = new Map(order.map((n, i) => [n, i]));
-  return [...rows].sort((a, b) => {
+  return rows.slice().sort((a, b) => {
     const ia = idx.has(a.robot_body) ? idx.get(a.robot_body) : 1e9;
     const ib = idx.has(b.robot_body) ? idx.get(b.robot_body) : 1e9;
     if (ia !== ib) return ia - ib;
@@ -251,43 +251,57 @@ function flashWeightRow(robotName) {
     `#weightList .weight-row[data-robot="${CSS.escape(robotName)}"]`,
   );
   if (!el) return;
-  el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  el.classList.remove("flash");
+  // restart animation
+  void el.offsetWidth;
   el.classList.add("flash");
-  setTimeout(() => el.classList.remove("flash"), 900);
+  el.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  window.setTimeout(() => el.classList.remove("flash"), 900);
 }
 
 function renderWeightPanel(rows) {
   const list = $("weightList");
   list.innerHTML = "";
+  if (!rows.length) {
+    list.innerHTML = `<p class="hint">当前 config 无 ik_match_table1 条目</p>`;
+    return;
+  }
+
   const header = document.createElement("div");
-  header.className = "weight-row weight-head";
+  header.className = "weight-row weight-header";
   header.innerHTML = `<span class="name">robot → human</span><span>pos</span><span>rot</span>`;
   list.appendChild(header);
+
   for (const row of rows) {
     const el = document.createElement("div");
     el.className = "weight-row";
     el.dataset.robot = row.robot_body;
     el.dataset.human = row.human_bone;
     el.id = `weight-${row.robot_body}`;
+
     const nm = document.createElement("span");
     nm.className = "name";
     nm.title = `${row.robot_body} → ${row.human_bone}`;
     nm.innerHTML = `${row.robot_body}<br><span class="sub">→ ${row.human_bone}</span>`;
+
     const ip = document.createElement("input");
-    ip.className = "pos-w";
     ip.type = "number";
-    ip.step = "0.1";
-    ip.value = String(row.pos_weight);
+    ip.step = "1";
+    ip.min = "0";
+    ip.className = "pos-w";
+    ip.value = Number(row.pos_weight);
+
     const ir = document.createElement("input");
-    ir.className = "rot-w";
     ir.type = "number";
-    ir.step = "0.1";
-    ir.value = String(row.rot_weight);
+    ir.step = "1";
+    ir.min = "0";
+    ir.className = "rot-w";
+    ir.value = Number(row.rot_weight);
+
     el.append(nm, ip, ir);
     list.appendChild(el);
   }
 }
-
 function collectWeights() {
   const rows = [];
   for (const el of document.querySelectorAll("#weightList .weight-row[data-robot]")) {
@@ -301,30 +315,13 @@ function collectWeights() {
   return rows;
 }
 
-function setProgress(cur, total) {
-  const wrap = $("progressWrap");
-  const bar = $("progressBar");
-  if (!total) {
-    wrap.hidden = true;
-    return;
-  }
-  wrap.hidden = false;
-  const pct = Math.min(100, Math.round((100 * cur) / total));
-  bar.style.width = `${pct}%`;
-}
-
 async function runRetarget() {
   $("btnRetarget").disabled = true;
-  $("btnPlay").disabled = true;
-  $("btnPause").disabled = true;
-  stopLocalPlay();
-  $("retargetHint").textContent = "正在启动全轨迹重定向…";
+  $("retargetHint").textContent = "重定向计算中，请稍候…";
   $("retargetHint").style.color = "";
   $("saveStatus").classList.remove("err");
-  setProgress(0, 1);
-
   try {
-    const start = await fetchJSON("/api/stage4/retarget", {
+    const data = await fetchJSON("/api/stage4/retarget", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -333,163 +330,35 @@ async function runRetarget() {
         config_path: state.configPath,
         config: state.config,
         bvh_unit: Number($("bvhUnit").value),
+        max_frames: Number($("maxFrames").value) || 50,
         weight_rows: collectWeights(),
       }),
     });
-    state.jobId = start.job_id;
-    await pollJobUntilDone();
+    state.config = data.config;
+    state.frames = data.frames || [];
+    state.frameIdx = 0;
+    state.mode = "retarget";
+    state.robotOffset = [0, 0, 0];
+
+    const n = state.frames.length;
+    $("frameTotal").textContent = String(Math.max(n - 1, 0));
+    $("frameIndex").textContent = "0";
+    const slider = $("frameSlider");
+    slider.min = "0";
+    slider.max = String(Math.max(n - 1, 0));
+    slider.value = "0";
+    slider.disabled = n <= 1;
+
+    drawCurrentFrame();
+    $("retargetHint").textContent =
+      `完成：${n} 帧 @ ${data.fps?.toFixed?.(1) || data.fps} fps · 点击机器人 link 可定位权重`;
   } catch (err) {
     $("retargetHint").textContent = String(err.message || err);
     $("retargetHint").style.color = "#f07178";
     setError(err);
-    setProgress(0, 0);
+  } finally {
     $("btnRetarget").disabled = false;
   }
-}
-
-function pollJobUntilDone() {
-  return new Promise((resolve, reject) => {
-    const tick = async () => {
-      try {
-        const st = await fetchJSON("/api/stage4/status");
-        if (st.total) {
-          setProgress(st.progress || 0, st.total);
-          $("retargetHint").textContent =
-            `重定向中 ${st.progress || 0}/${st.total} · ${st.message || ""}`;
-        }
-        if (st.status === "running") {
-          state.pollTimer = setTimeout(tick, 400);
-          return;
-        }
-        if (st.status === "error") {
-          throw new Error(st.error || "retarget failed");
-        }
-        if (st.status === "done") {
-          await loadRetargetResult(st);
-          resolve();
-          return;
-        }
-        // idle unexpected
-        state.pollTimer = setTimeout(tick, 400);
-      } catch (err) {
-        reject(err);
-      }
-    };
-    tick();
-  }).finally(() => {
-    $("btnRetarget").disabled = false;
-  });
-}
-
-async function loadRetargetResult(statusMeta) {
-  const data = await fetchJSON("/api/stage4/frames");
-  state.config = data.config || state.config;
-  state.robotEdges = data.robot_edges || [];
-  state.humanEdges = data.human_edges || [];
-  state.frames = (data.frames || []).map((f) => ({
-    robot: { nodes: f.robot.nodes, edges: state.robotEdges },
-    human: { nodes: f.human.nodes, edges: state.humanEdges },
-  }));
-  state.fps = data.fps || statusMeta.fps || 30;
-  state.frameIdx = 0;
-  state.mode = "retarget";
-  state.robotOffset = [0, 0, 0];
-
-  const n = state.frames.length;
-  $("frameTotal").textContent = String(Math.max(n - 1, 0));
-  $("frameIndex").textContent = "0";
-  const slider = $("frameSlider");
-  slider.min = "0";
-  slider.max = String(Math.max(n - 1, 0));
-  slider.value = "0";
-  slider.disabled = n <= 1;
-  $("btnPlay").disabled = n <= 1;
-  $("btnPause").disabled = n <= 1;
-
-  // Attach edges onto first frame robot for weight DFS
-  if (state.frames[0]) {
-    state.frames[0].robot.edges = state.robotEdges;
-  }
-  const sorted = sortWeightsByRobotDfs(
-    data.weight_rows || collectWeights(),
-    state.frames[0]?.robot,
-    state.config?.robot_root_name,
-  );
-  renderWeightPanel(sorted);
-
-  drawCurrentFrame();
-  await syncFrameToServer(0, false);
-
-  let hint =
-    `完成：${n} 帧 @ ${Number(state.fps).toFixed(1)} fps · Web 与 MuJoCo 已同步`;
-  if (data.viewer_error || statusMeta.viewer_error) {
-    hint += ` · MuJoCo 启动失败: ${data.viewer_error || statusMeta.viewer_error}`;
-  } else if (data.viewer_alive === false) {
-    hint += " · MuJoCo viewer 未就绪（检查本机 DISPLAY）";
-  } else {
-    hint += " · 已打开 MuJoCo 窗口";
-  }
-  $("retargetHint").textContent = hint;
-  setProgress(n, n);
-  setTimeout(() => setProgress(0, 0), 800);
-}
-
-async function syncFrameToServer(idx, playing) {
-  try {
-    await fetchJSON("/api/stage4/sync", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ frame_idx: idx, playing }),
-    });
-  } catch (_) {
-    /* viewer may be closed; ignore */
-  }
-}
-
-function goToFrame(idx, syncServer) {
-  if (!state.frames.length) return;
-  idx = Math.max(0, Math.min(idx, state.frames.length - 1));
-  state.frameIdx = idx;
-  $("frameSlider").value = String(idx);
-  $("frameIndex").textContent = String(idx);
-  drawCurrentFrame();
-  if (syncServer && state.mode === "retarget") {
-    syncFrameToServer(idx, state.playing);
-  }
-}
-
-function stopLocalPlay() {
-  state.playing = false;
-  if (state.playTimer) {
-    clearInterval(state.playTimer);
-    state.playTimer = null;
-  }
-}
-
-async function setPlaying(on) {
-  if (state.mode !== "retarget" || state.frames.length <= 1) return;
-  state.playing = !!on;
-  await syncFrameToServer(state.frameIdx, state.playing);
-
-  if (state.playTimer) {
-    clearInterval(state.playTimer);
-    state.playTimer = null;
-  }
-  if (!state.playing) return;
-
-  const dt = Math.max(8, Math.round(1000 / Math.max(1, state.fps)));
-  state.playTimer = setInterval(() => {
-    if (!state.playing) return;
-    let nxt = state.frameIdx + 1;
-    if (nxt >= state.frames.length) {
-      stopLocalPlay();
-      syncFrameToServer(state.frameIdx, false);
-      return;
-    }
-    // Local advance; MuJoCo also auto-advances when playing=true on server.
-    // Keep web as source of truth by syncing each frame.
-    goToFrame(nxt, true);
-  }, dt);
 }
 
 function edgeSegments(nodesByName, edges, offset) {
@@ -541,8 +410,6 @@ function drawCurrentFrame() {
   const humanNodes = frame.human.nodes;
   const robotByName = Object.fromEntries(robotNodes.map((n) => [n.name, n]));
   const humanByName = Object.fromEntries(humanNodes.map((n) => [n.name, n]));
-  const rEdgeList = frame.robot.edges || state.robotEdges || [];
-  const hEdgeList = frame.human.edges || state.humanEdges || [];
 
   const traces = [];
   const robotTraceStart = 0;
@@ -560,7 +427,7 @@ function drawCurrentFrame() {
     hovertemplate: "<b>%{text}</b><br>robot<br>(%{x:.3f}, %{y:.3f}, %{z:.3f})<extra></extra>",
   });
 
-  const rEdges = edgeSegments(robotByName, rEdgeList, [0, 0, 0]);
+  const rEdges = edgeSegments(robotByName, frame.robot.edges, [0, 0, 0]);
   traces.push({
     type: "scatter3d", mode: "lines", name: "robot bones", legendgroup: "robot",
     x: rEdges.x, y: rEdges.y, z: rEdges.z,
@@ -593,7 +460,7 @@ function drawCurrentFrame() {
     hovertemplate: "<b>%{text}</b><br>human<br>(%{x:.3f}, %{y:.3f}, %{z:.3f})<extra></extra>",
   });
 
-  const hEdges = edgeSegments(humanByName, hEdgeList, [0, 0, 0]);
+  const hEdges = edgeSegments(humanByName, frame.human.edges, [0, 0, 0]);
   traces.push({
     type: "scatter3d", mode: "lines", name: "human bones", legendgroup: "human",
     x: hEdges.x, y: hEdges.y, z: hEdges.z,
@@ -633,7 +500,7 @@ function drawCurrentFrame() {
     margin: { l: 0, r: 0, t: 36, b: 0 },
     title: {
       text: state.mode === "retarget"
-        ? `Full Retarget · Frame ${state.frameIdx} / ${Math.max(state.frames.length - 1, 0)}`
+        ? `Retarget Frame ${state.frameIdx} / ${Math.max(state.frames.length - 1, 0)}`
         : "Preview · scale + offset（未重定向）",
       font: { size: 13 },
     },
@@ -691,7 +558,7 @@ function applyRobotTranslate() {
 async function saveConfig() {
   $("saveStatus").classList.remove("err");
   try {
-    const data = await fetchJSON("/api/stage3/config/save", {
+    const data = await fetchJSON("/api/stage4/config/save", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

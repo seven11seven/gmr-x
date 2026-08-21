@@ -51,6 +51,7 @@ from tools.retargeting_app.stage3_logic import (  # noqa: E402
     run_preview_retarget,
 )
 from tools.retargeting_app import stage4_logic as stage4  # noqa: E402
+from tools.retargeting_app import aux_logic  # noqa: E402
 
 app = Flask(
     __name__,
@@ -88,6 +89,11 @@ def stage3_page():
 @app.get("/stage4")
 def stage4_page():
     return render_template("stage4.html")
+
+
+@app.get("/stage5")
+def stage5_page():
+    return render_template("stage5.html")
 
 
 @app.get("/api/meta")
@@ -377,11 +383,68 @@ def api_stage2_auto_estimate():
 
 
 # ---------------------------------------------------------------------------
-# Stage-3 APIs: pos/rot weight tuning + short retarget preview
+# Stage-3 APIs: fine-tune aux_* body local positions in robot XML
 # ---------------------------------------------------------------------------
 
-@app.post("/api/stage3/weights")
-def api_stage3_weights():
+@app.post("/api/stage3/aux_scene")
+def api_stage3_aux_scene():
+    """Robot (+ optional Stage-2 human) with optional in-memory aux overrides."""
+    try:
+        payload = request.get_json(force=True) or {}
+        xml = payload.get("xml") or DEFAULT_XML
+        bvh = payload.get("bvh")
+        config_path = payload.get("config_path")
+        cfg = payload.get("config")
+        if cfg is None and config_path:
+            cfg = load_config_file(config_path)
+        if cfg is not None and payload.get("bvh_unit") is not None:
+            unit = int(payload["bvh_unit"])
+            if unit in BVH_UNIT_OPTIONS:
+                cfg = dict(cfg)
+                cfg["bvh_unit"] = unit
+                cfg["bvh_scale"] = float(BVH_UNIT_OPTIONS[unit]["scale"])
+
+        aux_positions = payload.get("aux_positions") or None
+        scene = aux_logic.build_aux_scene(
+            xml_path=xml,
+            bvh_path=bvh if cfg is not None else None,
+            config=cfg,
+            bvh_unit=(cfg or {}).get("bvh_unit") if cfg else payload.get("bvh_unit"),
+            aux_positions=aux_positions,
+        )
+        return jsonify({"ok": True, **scene})
+    except Exception as exc:
+        traceback.print_exc()
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+@app.post("/api/stage3/aux_save")
+def api_stage3_aux_save():
+    """Write aux_* local positions back to robot XML (overwrite or copy)."""
+    try:
+        payload = request.get_json(force=True) or {}
+        xml = payload.get("xml") or DEFAULT_XML
+        aux_positions = payload.get("aux_positions") or {}
+        if not aux_positions:
+            return jsonify({"ok": False, "error": "missing aux_positions"}), 400
+        dest = payload.get("dest_path")
+        saved = aux_logic.write_xml_with_aux_positions(
+            xml_path=xml,
+            aux_positions=aux_positions,
+            dest_path=dest,
+        )
+        return jsonify({"ok": True, "path": saved})
+    except Exception as exc:
+        traceback.print_exc()
+        return jsonify({"ok": False, "error": str(exc)}), 400
+
+
+# ---------------------------------------------------------------------------
+# Stage-4 APIs: pos/rot weight tuning + short retarget preview
+# ---------------------------------------------------------------------------
+
+@app.post("/api/stage4/weights")
+def api_stage4_weights():
     """Load weight rows from a config (no retarget)."""
     try:
         payload = request.get_json(force=True) or {}
@@ -402,8 +465,8 @@ def api_stage3_weights():
         return jsonify({"ok": False, "error": str(exc)}), 400
 
 
-@app.post("/api/stage3/retarget")
-def api_stage3_retarget():
+@app.post("/api/stage4/retarget")
+def api_stage4_retarget_preview():
     """Retarget first N frames with current weights for preview."""
     try:
         payload = request.get_json(force=True) or {}
@@ -445,8 +508,8 @@ def api_stage3_retarget():
         return jsonify({"ok": False, "error": str(exc)}), 400
 
 
-@app.post("/api/stage3/config/save")
-def api_stage3_save():
+@app.post("/api/stage4/config/save")
+def api_stage4_save():
     try:
         payload = request.get_json(force=True) or {}
         config_path = payload.get("config_path") or payload.get("base_config_path")
@@ -458,7 +521,7 @@ def api_stage3_save():
 
         filename = payload.get("filename")
         if not filename:
-            filename = pathlib.Path(config_path).name if config_path else "stage3_config.json"
+            filename = pathlib.Path(config_path).name if config_path else "stage4_config.json"
 
         dest_dir = payload.get("dest_dir")
         if payload.get("save_to_ik_configs"):
@@ -474,11 +537,11 @@ def api_stage3_save():
 
 
 # ---------------------------------------------------------------------------
-# Stage-4 APIs: full-trajectory retarget + MuJoCo sync
+# Stage-5 APIs: full-trajectory retarget + MuJoCo sync
 # ---------------------------------------------------------------------------
 
-@app.post("/api/stage4/retarget")
-def api_stage4_retarget():
+@app.post("/api/stage5/retarget")
+def api_stage5_retarget():
     """Start async full-trajectory retarget (+ MuJoCo viewer)."""
     try:
         payload = request.get_json(force=True) or {}
@@ -516,14 +579,14 @@ def api_stage4_retarget():
         return jsonify({"ok": False, "error": str(exc)}), 400
 
 
-@app.get("/api/stage4/status")
-def api_stage4_status():
+@app.get("/api/stage5/status")
+def api_stage5_status():
     return jsonify(stage4.get_job_status())
 
 
-@app.get("/api/stage4/frames")
-def api_stage4_frames():
-    """Return web skeleton frames for the current Stage-4 session."""
+@app.get("/api/stage5/frames")
+def api_stage5_frames():
+    """Return web skeleton frames for the current Stage-5 session."""
     try:
         meta = stage4.get_session_meta()
         frames = stage4.get_web_frames()
@@ -551,8 +614,8 @@ def api_stage4_frames():
         return jsonify({"ok": False, "error": str(exc)}), 400
 
 
-@app.post("/api/stage4/sync")
-def api_stage4_sync():
+@app.post("/api/stage5/sync")
+def api_stage5_sync():
     """Sync MuJoCo viewer to a frame index (and optional play flag)."""
     try:
         payload = request.get_json(force=True) or {}
@@ -578,8 +641,9 @@ def main():
     print(f"GMR app → http://{args.host}:{args.port}")
     print(f"  Stage-1: http://{args.host}:{args.port}/")
     print(f"  Stage-2: http://{args.host}:{args.port}/stage2")
-    print(f"  Stage-3: http://{args.host}:{args.port}/stage3")
-    print(f"  Stage-4: http://{args.host}:{args.port}/stage4")
+    print(f"  Stage-3: http://{args.host}:{args.port}/stage3  (Aux)")
+    print(f"  Stage-4: http://{args.host}:{args.port}/stage4  (Weights)")
+    print(f"  Stage-5: http://{args.host}:{args.port}/stage5  (Retarget)")
     print(f"Project root: {_PROJECT_ROOT}")
     # threaded: allow /sync while retarget job + MuJoCo viewer run
     app.run(host=args.host, port=args.port, debug=args.debug, threaded=True)
