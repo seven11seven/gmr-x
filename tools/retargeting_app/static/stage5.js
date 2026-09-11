@@ -116,6 +116,7 @@ async function init() {
   $("btnPlay").addEventListener("click", () => setPlaying(true));
   $("btnPause").addEventListener("click", () => setPlaying(false));
   bindSolverFlagInputs();
+  $("btnMirrorLR")?.addEventListener("click", applyWeightMirror);
   $("btnTransReset").addEventListener("click", () => {
     state.robotOffset = [0, 0, 0];
     applyRobotTranslate();
@@ -317,6 +318,7 @@ function renderWeightPanel(rows) {
     ir.value = String(row.rot_weight);
     el.append(nm, ip, ir);
     list.appendChild(el);
+    if (window.GmrWeightMirror) GmrWeightMirror.bindLiveLeftToRight(el);
   }
 }
 
@@ -331,6 +333,26 @@ function collectWeights() {
     });
   }
   return rows;
+}
+
+function applyWeightMirror() {
+  const status = $("weightMirrorStatus");
+  if (status) {
+    status.classList.remove("err");
+    status.textContent = "";
+  }
+  if (!window.GmrWeightMirror) return;
+  const { copied, missing } = GmrWeightMirror.applyLeftToRightWeights();
+  if (status) {
+    if (!copied) {
+      status.classList.add("err");
+      status.textContent = missing.length
+        ? `没有可写入的右侧权重。缺失: ${missing.slice(0, 4).join(", ")}`
+        : "没有可对称的 left_* / *_left_* 权重";
+      return;
+    }
+    status.textContent = `已对称 left → right（更新 ${copied} 条）`;
+  }
 }
 
 function setProgress(cur, total) {

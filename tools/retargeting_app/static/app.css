@@ -200,6 +200,17 @@ body {
   margin-bottom: 0.5rem;
 }
 .card-head h2 { margin: 0; }
+.card-head button.ghost {
+  width: auto;
+  padding: 0.28rem 0.5rem;
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+#weightMirrorStatus {
+  margin: 0 0 0.45rem;
+  min-height: 0;
+  font-size: 0.72rem;
+}
 
 label {
   display: flex;

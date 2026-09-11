@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>GMR · Stage 4 — Weights</title>
   <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
-  <link rel="stylesheet" href="/static/app.css?v=stage4-w1" />
+  <link rel="stylesheet" href="/static/app.css?v=weight-mirror-1" />
 </head>
 <body>
   <header class="topbar">
@@ -125,9 +125,10 @@
       <section class="card card-fill">
         <div class="card-head">
           <h2>权重分配</h2>
-          <span class="hint" style="margin:0;">pos / rot</span>
+          <button id="btnMirrorLR" class="ghost" type="button" title="将 left_* / *_left_* 的 pos/rot 对称到 right">左 → 右</button>
         </div>
-        <p class="hint">改权重后需重新「开始重定向」才会更新画面</p>
+        <p class="hint">改 left 权重会同步到对应 right。也可点「左 → 右」一键覆盖。改完需重新重定向。</p>
+        <p class="status" id="weightMirrorStatus"></p>
         <div id="weightList" class="param-list param-list-fill"></div>
       </section>
     </aside>
@@ -146,7 +147,8 @@
   </main>
 
   <script src="/static/human_vis.js?v=hand-filter-1"></script>
+  <script src="/static/side_mirror.js?v=weight-mirror-1"></script>
   <script src="/static/session.js?v=persist-2"></script>
-  <script src="/static/stage4.js?v=solver-flags-1"></script>
+  <script src="/static/stage4.js?v=weight-mirror-1"></script>
 </body>
 </html>
