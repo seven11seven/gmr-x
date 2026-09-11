@@ -19,6 +19,8 @@ DEFAULT_IK_CONFIG: dict[str, Any] = {
     "bvh_scale": 1.0,  # derived: 1 / bvh_unit
     "use_ik_match_table1": True,
     "use_ik_match_table2": False,
+    "use_frame_joint_damper": False,
+    "offset_to_ground": False,
     "human_scale_table_vertical": {},
     "human_scale_table_horizontal": {},
     "ik_match_table1": {},
@@ -177,7 +179,24 @@ def build_config(
     cfg.setdefault("human_height_assumption", 1.8)
     cfg.setdefault("use_ik_match_table1", True)
     cfg.setdefault("use_ik_match_table2", False)
+    cfg.setdefault("use_frame_joint_damper", False)
+    cfg.setdefault("offset_to_ground", False)
 
+    return cfg
+
+
+def apply_solver_flags(cfg: dict, payload: dict | None = None) -> dict:
+    """Write damper / offset_to_ground flags into an ik_config dict."""
+    cfg = copy.deepcopy(cfg)
+    payload = payload or {}
+    for key, default in (
+        ("use_frame_joint_damper", False),
+        ("offset_to_ground", False),
+    ):
+        if key in payload and payload[key] is not None:
+            cfg[key] = bool(payload[key])
+        else:
+            cfg.setdefault(key, default)
     return cfg
 
 

@@ -259,7 +259,7 @@ def process_all_frames(retargeter, human_frames, model):
     print(f"\n  Processing {len(human_frames)} frames ...")
     for fi, human_data in enumerate(human_frames):
         # Retarget this frame
-        qpos = retargeter.retarget(human_data, offset_to_ground=True)
+        qpos = retargeter.retarget(human_data)
 
         # Robot forward kinematics
         data_fk.qpos = qpos

@@ -39,27 +39,30 @@ async function fetchJSON(url, opts) {
 async function init() {
   state.meta = await fetchJSON("/api/meta");
   const d = state.meta.defaults;
+  const sel = window.GmrSession
+    ? GmrSession.pick(d, { optionalConfig: true })
+    : d;
 
   fillSelect(
     $("xmlSelect"),
     state.meta.xml_files,
     "path",
     (x) => x.path,
-    d.xml,
+    sel.xml || d.xml,
   );
   fillSelect(
     $("bvhSelect"),
     state.meta.bvh_files,
     "path",
     (x) => x.path,
-    d.bvh,
+    sel.bvh || d.bvh,
   );
   fillSelect(
     $("bvhUnit"),
     state.meta.bvh_units,
     "unit",
     (u) => `${u.label}  (scale=${u.scale})`,
-    String(d.bvh_unit),
+    String(sel.bvh_unit ?? d.bvh_unit),
   );
   // unit values are numbers — ensure option values stringify correctly
   [...$("bvhUnit").options].forEach((o) => { o.value = String(o.value); });
@@ -71,6 +74,11 @@ async function init() {
     opt.value = c.path;
     opt.textContent = `${c.name}  (${c.dir})`;
     cfgSel.appendChild(opt);
+  }
+  if (sel.config) cfgSel.value = sel.config;
+  if (window.GmrSession) {
+    GmrSession.restore();
+    GmrSession.bind();
   }
 
   $("btnLoad").addEventListener("click", loadScene);
@@ -341,6 +349,7 @@ async function loadScene() {
     }
 
     drawScene(state.scene, state.mapping);
+    if (window.GmrSession) GmrSession.capture();
   } catch (err) {
     $("saveStatus").textContent = String(err.message || err);
     $("saveStatus").classList.add("err");
@@ -604,6 +613,10 @@ async function saveConfig() {
       cfgSel.appendChild(opt);
     }
     cfgSel.value = cur;
+    if (window.GmrSession) {
+      GmrSession.capture();
+      GmrSession.syncSaveName();
+    }
   } catch (err) {
     $("saveStatus").textContent = String(err.message || err);
     $("saveStatus").classList.add("err");

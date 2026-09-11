@@ -26,6 +26,7 @@ if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
 
 from tools.retargeting_app.config_builder import (  # noqa: E402
+    apply_solver_flags,
     build_config,
     load_config_file,
     mapping_from_ik_table,
@@ -474,6 +475,7 @@ def api_stage4_retarget_preview():
         bvh = payload.get("bvh") or DEFAULT_BVH
         config_path = payload.get("config_path")
         max_frames = int(payload.get("max_frames", 50))
+        sample = str(payload.get("sample") or "uniform")
 
         if payload.get("config"):
             base_cfg = payload["config"]
@@ -484,6 +486,7 @@ def api_stage4_retarget_preview():
             config_path = DEFAULT_STAGE2_CONFIG
 
         cfg = merge_stage3_weights(base_cfg, payload.get("weight_rows"))
+        cfg = apply_solver_flags(cfg, payload)
         if payload.get("bvh_unit") is not None:
             unit = int(payload["bvh_unit"])
             if unit in BVH_UNIT_OPTIONS:
@@ -496,6 +499,7 @@ def api_stage4_retarget_preview():
             config=cfg,
             bvh_unit=cfg.get("bvh_unit"),
             max_frames=max_frames,
+            sample=sample,
         )
         return jsonify({
             "ok": True,
@@ -518,6 +522,7 @@ def api_stage4_save():
 
         base_cfg = payload.get("base_config") or load_config_file(config_path)
         cfg = merge_stage3_weights(base_cfg, payload.get("weight_rows"))
+        cfg = apply_solver_flags(cfg, payload)
 
         filename = payload.get("filename")
         if not filename:
@@ -558,6 +563,7 @@ def api_stage5_retarget():
             config_path = DEFAULT_STAGE2_CONFIG
 
         cfg = merge_stage3_weights(base_cfg, payload.get("weight_rows"))
+        cfg = apply_solver_flags(cfg, payload)
         if payload.get("bvh_unit") is not None:
             unit = int(payload["bvh_unit"])
             if unit in BVH_UNIT_OPTIONS:

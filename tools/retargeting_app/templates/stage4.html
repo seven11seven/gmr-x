@@ -13,7 +13,7 @@
       <span class="brand-mark">GMR</span>
       <div>
         <h1>Stage 4 · Weights</h1>
-        <p>调整 pos / rot 权重，预览前 50 帧重定向结果</p>
+        <p>调整 pos / rot 权重，预览重定向结果（默认从全轨迹均匀抽帧）</p>
       </div>
     </div>
     <div class="stepper">
@@ -45,9 +45,28 @@
         <label>预览帧数
           <input id="maxFrames" type="number" min="1" max="200" value="50" />
         </label>
+        <label>抽帧方式
+          <select id="sampleMode">
+            <option value="uniform" selected>全轨迹均匀抽样</option>
+            <option value="prefix">从头连续 N 帧</option>
+          </select>
+        </label>
         <div class="row">
           <button id="btnReload" class="primary" type="button">重新加载 Config</button>
         </div>
+      </section>
+
+      <section class="card">
+        <h2>IK 求解选项</h2>
+        <p class="hint">写入 config JSON，控制重定向。默认关闭。</p>
+        <label class="check">
+          <input id="optDamper" type="checkbox" />
+          FrameJointDamper
+        </label>
+        <label class="check">
+          <input id="optOffsetToGround" type="checkbox" />
+          offset_to_ground（按脚最低点贴地 +5cm）
+        </label>
       </section>
 
       <section class="card">
@@ -73,7 +92,7 @@
       <section class="card">
         <h2>保存 Config</h2>
         <label>文件名
-          <input id="saveName" type="text" value="stage4_xsens_to_d20.json" />
+          <input id="saveName" type="text" value="" placeholder="与当前 IK config 同名" />
         </label>
         <label class="check">
           <input id="overwriteSrc" type="checkbox" checked />
@@ -91,8 +110,12 @@
 
       <section class="card">
         <h2>重定向预览</h2>
-        <p class="hint">使用当前权重，对前 N 帧做 IK 重定向并显示</p>
+        <p class="hint">使用当前权重做 IK。均匀抽样可覆盖坐下等后半段动作，显示与 Stage 5 同一世界系。</p>
         <button id="btnRetarget" class="primary" type="button">开始重定向并显示</button>
+        <div class="row" style="margin-top:0.5rem; gap:0.4rem;">
+          <button id="btnPlay" class="ghost" type="button" disabled>播放</button>
+          <button id="btnPause" class="ghost" type="button" disabled>暂停</button>
+        </div>
         <p class="hint" id="retargetHint" style="margin-top:0.45rem;"></p>
       </section>
     </aside>
@@ -115,6 +138,7 @@
       <div class="frame-bar">
         <label class="frame-label">帧
           <span id="frameIndex">0</span> / <span id="frameTotal">0</span>
+          <span id="sourceFrameHint" class="hint"></span>
         </label>
         <input id="frameSlider" type="range" min="0" max="0" value="0" step="1" />
       </div>
@@ -122,6 +146,7 @@
   </main>
 
   <script src="/static/human_vis.js?v=hand-filter-1"></script>
-  <script src="/static/stage4.js?v=hand-filter-1"></script>
+  <script src="/static/session.js?v=persist-2"></script>
+  <script src="/static/stage4.js?v=solver-flags-1"></script>
 </body>
 </html>

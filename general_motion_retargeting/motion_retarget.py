@@ -104,7 +104,7 @@ class GeneralMotionRetargeting:
         verbose: bool=True,
         use_velocity_limit: bool=False,
         ik_config_path: str = None,
-        use_frame_joint_damper: bool=True,
+        use_frame_joint_damper: bool | None = None,
         frame_joint_damper_deadband: float=0.17,
         frame_joint_damper_high_threshold: float=0.5,
         frame_joint_damper_mid_weight: float=10000.0,
@@ -188,11 +188,22 @@ class GeneralMotionRetargeting:
 
         self.solver = solver
         self.damping = damping
-        self.use_frame_joint_damper = use_frame_joint_damper
+        if use_frame_joint_damper is None:
+            self.use_frame_joint_damper = bool(
+                ik_config.get("use_frame_joint_damper", False)
+            )
+        else:
+            self.use_frame_joint_damper = bool(use_frame_joint_damper)
+        self.offset_to_ground = bool(ik_config.get("offset_to_ground", False))
         self.frame_joint_damper_deadband = frame_joint_damper_deadband
         self.frame_joint_damper_high_threshold = frame_joint_damper_high_threshold
         self.frame_joint_damper_mid_weight = frame_joint_damper_mid_weight
         self.frame_joint_damper_high_weight = frame_joint_damper_high_weight
+        if verbose:
+            print(
+                f"[GMR] use_frame_joint_damper={self.use_frame_joint_damper} "
+                f"offset_to_ground={self.offset_to_ground}"
+            )
 
         self.frame_to_task1 = {}
         self.frame_to_task2 = {}
@@ -252,9 +263,12 @@ class GeneralMotionRetargeting:
         self.tasks2.append(self.posture_task)
         self.tasks1.append(self.posture_task)
 
-        self.damping_task = mink.DampingTask(self.model, cost=1.0)
-        self.tasks1.append(self.damping_task)
-        self.tasks2.append(self.damping_task)
+        # Motion dampers off. mink.DampingTask fights large first-frame
+        # orientation corrections; FrameJointDamper (1e4/1e5) overpowers
+        # cartesian foot tasks. Re-enable only with an explicit flag.
+        # self.damping_task = mink.DampingTask(self.model, cost=1.0)
+        # self.tasks1.append(self.damping_task)
+        # self.tasks2.append(self.damping_task)
 
         self.frame_joint_damper_task = FrameJointDamperTask(
             self.model,
@@ -324,7 +338,7 @@ class GeneralMotionRetargeting:
         # self.ik_limits.append(collision_avoidance_limit)
         
   
-    def update_targets(self, human_data, offset_to_ground=False):
+    def update_targets(self, human_data, offset_to_ground=None):
         # scale human data in local frame
         human_data = self.to_numpy(human_data)
         human_data = self.scale_human_data(human_data, self.human_root_name,
@@ -334,6 +348,8 @@ class GeneralMotionRetargeting:
         human_data = self.apply_ground_offset(human_data)
         # Save pre-ground-offset data for display/visualization consistency
         self.scaled_human_data = human_data
+        if offset_to_ground is None:
+            offset_to_ground = self.offset_to_ground
         if offset_to_ground:
             human_data = self.offset_human_data_to_ground(human_data)
 
@@ -350,8 +366,10 @@ class GeneralMotionRetargeting:
             self.posture_task.set_target_from_configuration(self.configuration)
             
             
-    def retarget(self, human_data, offset_to_ground=False):
+    def retarget(self, human_data, offset_to_ground=None):
         # Update the task targets
+        if offset_to_ground is None:
+            offset_to_ground = self.offset_to_ground
         self.update_targets(human_data, offset_to_ground)
         frame_start_qpos = self.configuration.data.qpos.copy()
         if self.use_frame_joint_damper:

@@ -51,16 +51,18 @@ function setError(err) {
 async function init() {
   state.meta = await fetchJSON("/api/meta");
   const d = state.meta.defaults;
+  const sel = window.GmrSession ? GmrSession.pick(d) : d;
 
-  fillSelect($("xmlSelect"), state.meta.xml_files, "path", (x) => x.path, d.xml);
-  fillSelect($("bvhSelect"), state.meta.bvh_files, "path", (x) => x.path, d.bvh);
+  fillSelect($("xmlSelect"), state.meta.xml_files, "path", (x) => x.path, sel.xml || d.xml);
+  fillSelect($("bvhSelect"), state.meta.bvh_files, "path", (x) => x.path, sel.bvh || d.bvh);
   fillSelect(
     $("bvhUnit"),
     state.meta.bvh_units,
     "unit",
     (u) => `${u.label}  (scale=${u.scale})`,
-    String(d.bvh_unit),
+    String(sel.bvh_unit ?? d.bvh_unit),
   );
+  [...$("bvhUnit").options].forEach((o) => { o.value = String(o.value); });
 
   const cfgSel = $("configSelect");
   cfgSel.innerHTML = "";
@@ -74,8 +76,13 @@ async function init() {
     opt.textContent = `${c.name}  (${c.dir})`;
     cfgSel.appendChild(opt);
   }
-  if (d.config && [...cfgSel.options].some((o) => o.value === d.config)) {
-    cfgSel.value = d.config;
+  const preferred = sel.config || d.config;
+  if (preferred && [...cfgSel.options].some((o) => o.value === preferred)) {
+    cfgSel.value = preferred;
+  }
+  if (window.GmrSession) {
+    GmrSession.restore();
+    GmrSession.bind();
   }
 
   $("btnReload").addEventListener("click", () => reloadScene(true));
@@ -221,6 +228,7 @@ async function reloadScene(resetPanel) {
     const nAux = state.auxRows.length;
     $("loadHint").textContent =
       `已加载 ${nAux} 个 aux_* · ${state.human ? "含人类对比" : "仅机器人"}`;
+    if (window.GmrSession) GmrSession.capture();
   } catch (err) {
     $("loadHint").textContent = String(err.message || err);
     $("loadHint").style.color = "#f07178";

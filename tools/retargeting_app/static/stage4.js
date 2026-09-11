@@ -5,12 +5,18 @@ const state = {
   config: null,
   configPath: null,
   frames: [],
+  robotEdges: [],
   humanEdges: [],
   frameIdx: 0,
   mode: "preview", // "preview" (scale+offset) | "retarget"
   robotOffset: [0, 0, 0],
   robotOrig: null,
   robotTraceIndices: null,
+  fps: 30,
+  playing: false,
+  playTimer: null,
+  sourceIndices: [],
+  nSource: 0,
 };
 
 const AXIS_LEN = 0.05;
@@ -21,6 +27,32 @@ const C_HUMAN_MAP = "#ff7f0e";
 const C_BONE = "#888888";
 
 function $(id) { return document.getElementById(id); }
+
+function syncSolverFlagsFromConfig(cfg) {
+  if ($("optDamper")) {
+    $("optDamper").checked = !!(cfg && cfg.use_frame_joint_damper);
+  }
+  if ($("optOffsetToGround")) {
+    $("optOffsetToGround").checked = !!(cfg && cfg.offset_to_ground);
+  }
+}
+
+function captureSolverFlags(cfg) {
+  const next = Object.assign({}, cfg || {});
+  if ($("optDamper")) next.use_frame_joint_damper = $("optDamper").checked;
+  if ($("optOffsetToGround")) next.offset_to_ground = $("optOffsetToGround").checked;
+  return next;
+}
+
+function bindSolverFlagInputs() {
+  ["optDamper", "optOffsetToGround"].forEach((id) => {
+    const el = $(id);
+    if (!el) return;
+    el.addEventListener("change", () => {
+      state.config = captureSolverFlags(state.config);
+    });
+  });
+}
 
 function fillSelect(sel, items, valueKey, labelFn, selected) {
   sel.innerHTML = "";
@@ -50,16 +82,18 @@ function setError(err) {
 async function init() {
   state.meta = await fetchJSON("/api/meta");
   const d = state.meta.defaults;
+  const sel = window.GmrSession ? GmrSession.pick(d) : d;
 
-  fillSelect($("xmlSelect"), state.meta.xml_files, "path", (x) => x.path, d.xml);
-  fillSelect($("bvhSelect"), state.meta.bvh_files, "path", (x) => x.path, d.bvh);
+  fillSelect($("xmlSelect"), state.meta.xml_files, "path", (x) => x.path, sel.xml || d.xml);
+  fillSelect($("bvhSelect"), state.meta.bvh_files, "path", (x) => x.path, sel.bvh || d.bvh);
   fillSelect(
     $("bvhUnit"),
     state.meta.bvh_units,
     "unit",
     (u) => `${u.label}  (scale=${u.scale})`,
-    String(d.bvh_unit),
+    String(sel.bvh_unit ?? d.bvh_unit),
   );
+  [...$("bvhUnit").options].forEach((o) => { o.value = String(o.value); });
 
   const cfgSel = $("configSelect");
   cfgSel.innerHTML = "";
@@ -69,25 +103,30 @@ async function init() {
     opt.textContent = `${c.name}  (${c.dir})`;
     cfgSel.appendChild(opt);
   }
-  if (d.config && [...cfgSel.options].some((o) => o.value === d.config)) {
-    cfgSel.value = d.config;
+  const preferred = sel.config || d.config;
+  if (preferred && [...cfgSel.options].some((o) => o.value === preferred)) {
+    cfgSel.value = preferred;
   }
-  if (cfgSel.value) $("saveName").value = cfgSel.value.split("/").pop();
-
-  cfgSel.addEventListener("change", () => {
-    $("saveName").value = cfgSel.value.split("/").pop() || "stage4_config.json";
-  });
+  if (window.GmrSession) {
+    GmrSession.restore();
+    GmrSession.bind();
+  }
 
   $("btnReload").addEventListener("click", reloadWeights);
   $("btnSave").addEventListener("click", saveConfig);
   $("btnRetarget").addEventListener("click", runRetarget);
+  $("btnPlay").addEventListener("click", () => setPlaying(true));
+  $("btnPause").addEventListener("click", () => setPlaying(false));
+  bindSolverFlagInputs();
   $("btnTransReset").addEventListener("click", () => {
     state.robotOffset = [0, 0, 0];
     applyRobotTranslate();
   });
   $("frameSlider").addEventListener("input", () => {
+    stopLocalPlay();
     state.frameIdx = Number($("frameSlider").value);
     $("frameIndex").textContent = String(state.frameIdx);
+    updateSourceFrameHint();
     drawCurrentFrame();
   });
 
@@ -139,9 +178,11 @@ async function reloadWeights() {
     if (data.config?.bvh_unit != null) {
       $("bvhUnit").value = String(data.config.bvh_unit);
     }
+    syncSolverFlagsFromConfig(state.config);
     state._pendingWeightRows = data.weight_rows || [];
     $("retargetHint").textContent = "Config 已加载。正在加载 scale/offset 预览…";
     await loadPreviewScene();
+    state.config = captureSolverFlags(state.config);
     // Sort weights by robot XML DFS after we have edges from preview
     const sorted = sortWeightsByRobotDfs(
       state._pendingWeightRows,
@@ -150,6 +191,7 @@ async function reloadWeights() {
     );
     renderWeightPanel(sorted);
     $("retargetHint").textContent = "已显示 scale/offset 对比。点击机器人 link 可定位权重条目。";
+    if (window.GmrSession) GmrSession.capture();
   } catch (err) {
     setError(err);
   } finally {
@@ -173,6 +215,7 @@ async function loadPreviewScene() {
   const scene = data.scene;
   state.config = data.config || state.config;
   state.mode = "preview";
+  state.robotEdges = scene.robot?.edges || [];
   state.humanEdges = scene.human?.edges || [];
   state.frames = [{
     robot: scene.robot,
@@ -180,8 +223,14 @@ async function loadPreviewScene() {
   }];
   state.frameIdx = 0;
   state.robotOffset = [0, 0, 0];
+  state.sourceIndices = [];
+  state.nSource = 0;
+  stopLocalPlay();
+  $("btnPlay").disabled = true;
+  $("btnPause").disabled = true;
   $("frameTotal").textContent = "0";
   $("frameIndex").textContent = "0";
+  updateSourceFrameHint();
   const slider = $("frameSlider");
   slider.min = "0";
   slider.max = "0";
@@ -319,6 +368,9 @@ function collectWeights() {
 
 async function runRetarget() {
   $("btnRetarget").disabled = true;
+  $("btnPlay").disabled = true;
+  $("btnPause").disabled = true;
+  stopLocalPlay();
   $("retargetHint").textContent = "重定向计算中，请稍候…";
   $("retargetHint").style.color = "";
   $("saveStatus").classList.remove("err");
@@ -330,17 +382,25 @@ async function runRetarget() {
         xml: $("xmlSelect").value,
         bvh: $("bvhSelect").value,
         config_path: state.configPath,
-        config: state.config,
+        config: captureSolverFlags(state.config),
         bvh_unit: Number($("bvhUnit").value),
         max_frames: Number($("maxFrames").value) || 50,
+        sample: $("sampleMode")?.value || "uniform",
         weight_rows: collectWeights(),
+        use_frame_joint_damper: $("optDamper")?.checked || false,
+        offset_to_ground: $("optOffsetToGround")?.checked || false,
       }),
     });
     state.config = data.config;
+    state.robotEdges = data.frames?.[0]?.robot?.edges || state.robotEdges;
+    state.humanEdges = data.frames?.[0]?.human?.edges || state.humanEdges;
     state.frames = data.frames || [];
     state.frameIdx = 0;
     state.mode = "retarget";
     state.robotOffset = [0, 0, 0];
+    state.fps = Number(data.fps) || 30;
+    state.sourceIndices = data.source_indices || [];
+    state.nSource = Number(data.n_source) || 0;
 
     const n = state.frames.length;
     $("frameTotal").textContent = String(Math.max(n - 1, 0));
@@ -350,10 +410,16 @@ async function runRetarget() {
     slider.max = String(Math.max(n - 1, 0));
     slider.value = "0";
     slider.disabled = n <= 1;
+    $("btnPlay").disabled = n <= 1;
+    $("btnPause").disabled = n <= 1;
+    updateSourceFrameHint();
 
     drawCurrentFrame();
+    const sampleLabel = data.sample === "prefix" ? "从头连续" : "全轨迹均匀";
     $("retargetHint").textContent =
-      `完成：${n} 帧 @ ${data.fps?.toFixed?.(1) || data.fps} fps · 点击机器人 link 可定位权重`;
+      `完成：${n} 帧预览（${sampleLabel}，源轨迹 ${state.nSource} 帧）@ ${
+        Number(state.fps).toFixed(1)
+      } fps · 点击机器人 link 可定位权重`;
   } catch (err) {
     $("retargetHint").textContent = String(err.message || err);
     $("retargetHint").style.color = "#f07178";
@@ -361,6 +427,51 @@ async function runRetarget() {
   } finally {
     $("btnRetarget").disabled = false;
   }
+}
+
+function updateSourceFrameHint() {
+  const el = $("sourceFrameHint");
+  if (!el) return;
+  if (state.mode !== "retarget" || !state.sourceIndices.length) {
+    el.textContent = "";
+    return;
+  }
+  const src = state.sourceIndices[state.frameIdx];
+  if (src == null) {
+    el.textContent = "";
+    return;
+  }
+  const total = state.nSource ? ` / ${state.nSource - 1}` : "";
+  el.textContent = ` · 源帧 ${src}${total}`;
+}
+
+function stopLocalPlay() {
+  state.playing = false;
+  if (state.playTimer) {
+    clearInterval(state.playTimer);
+    state.playTimer = null;
+  }
+}
+
+function setPlaying(on) {
+  if (state.mode !== "retarget" || state.frames.length <= 1) return;
+  stopLocalPlay();
+  if (!on) return;
+  state.playing = true;
+  const dt = 80; // ~12 fps: 50-frame demo lasts ~4s even if source is 90 Hz
+  state.playTimer = setInterval(() => {
+    if (!state.playing) return;
+    let nxt = state.frameIdx + 1;
+    if (nxt >= state.frames.length) {
+      stopLocalPlay();
+      return;
+    }
+    state.frameIdx = nxt;
+    $("frameSlider").value = String(nxt);
+    $("frameIndex").textContent = String(nxt);
+    updateSourceFrameHint();
+    drawCurrentFrame();
+  }, dt);
 }
 
 function edgeSegments(nodesByName, edges, offset) {
@@ -416,6 +527,7 @@ function drawCurrentFrame() {
   const humanNodes = visHuman.nodes;
   const robotByName = Object.fromEntries(robotNodes.map((n) => [n.name, n]));
   const humanByName = Object.fromEntries(humanNodes.map((n) => [n.name, n]));
+  const rEdgeList = frame.robot.edges || state.robotEdges || [];
 
   const traces = [];
   const robotTraceStart = 0;
@@ -433,7 +545,7 @@ function drawCurrentFrame() {
     hovertemplate: "<b>%{text}</b><br>robot<br>(%{x:.3f}, %{y:.3f}, %{z:.3f})<extra></extra>",
   });
 
-  const rEdges = edgeSegments(robotByName, frame.robot.edges, [0, 0, 0]);
+  const rEdges = edgeSegments(robotByName, rEdgeList, [0, 0, 0]);
   traces.push({
     type: "scatter3d", mode: "lines", name: "robot bones", legendgroup: "robot",
     x: rEdges.x, y: rEdges.y, z: rEdges.z,
@@ -506,7 +618,10 @@ function drawCurrentFrame() {
     margin: { l: 0, r: 0, t: 36, b: 0 },
     title: {
       text: state.mode === "retarget"
-        ? `Retarget Frame ${state.frameIdx} / ${Math.max(state.frames.length - 1, 0)}`
+        ? `Retarget Preview ${state.frameIdx} / ${Math.max(state.frames.length - 1, 0)}`
+          + (state.sourceIndices[state.frameIdx] != null
+            ? `  (src ${state.sourceIndices[state.frameIdx]})`
+            : "")
         : "Preview · scale + offset（未重定向）",
       font: { size: 13 },
     },
@@ -569,15 +684,18 @@ async function saveConfig() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         config_path: state.configPath,
-        base_config: state.config,
+        base_config: captureSolverFlags(state.config),
         filename: $("saveName").value.trim() || "stage4_config.json",
         overwrite: $("overwriteSrc").checked,
         save_to_ik_configs: $("saveToIk").checked,
         weight_rows: collectWeights(),
+        use_frame_joint_damper: $("optDamper")?.checked || false,
+        offset_to_ground: $("optOffsetToGround")?.checked || false,
       }),
     });
     $("saveStatus").textContent = `已保存: ${data.path}`;
     state.config = data.config;
+    syncSolverFlagsFromConfig(state.config);
     state.configPath = data.path;
 
     state.meta = await fetchJSON("/api/meta");
@@ -591,6 +709,10 @@ async function saveConfig() {
       cfgSel.appendChild(opt);
     }
     if ([...cfgSel.options].some((o) => o.value === cur)) cfgSel.value = cur;
+    if (window.GmrSession) {
+      GmrSession.capture();
+      GmrSession.syncSaveName();
+    }
   } catch (err) {
     setError(err);
   }

@@ -218,7 +218,7 @@ def run_full_retarget(
 
         print(f"\n  [Stage4] Retargeting {n_total} frames …")
         for fi, human_data in enumerate(human_frames):
-            qpos = retargeter.retarget(human_data, offset_to_ground=True)
+            qpos = retargeter.retarget(human_data)
             qpos_list.append(qpos.copy())
 
             # MuJoCo overlay: same as xsens_bvh_to_robot (scaled_human_data)

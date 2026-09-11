@@ -26,6 +26,32 @@ const C_BONE = "#888888";
 
 function $(id) { return document.getElementById(id); }
 
+function syncSolverFlagsFromConfig(cfg) {
+  if ($("optDamper")) {
+    $("optDamper").checked = !!(cfg && cfg.use_frame_joint_damper);
+  }
+  if ($("optOffsetToGround")) {
+    $("optOffsetToGround").checked = !!(cfg && cfg.offset_to_ground);
+  }
+}
+
+function captureSolverFlags(cfg) {
+  const next = Object.assign({}, cfg || {});
+  if ($("optDamper")) next.use_frame_joint_damper = $("optDamper").checked;
+  if ($("optOffsetToGround")) next.offset_to_ground = $("optOffsetToGround").checked;
+  return next;
+}
+
+function bindSolverFlagInputs() {
+  ["optDamper", "optOffsetToGround"].forEach((id) => {
+    const el = $(id);
+    if (!el) return;
+    el.addEventListener("change", () => {
+      state.config = captureSolverFlags(state.config);
+    });
+  });
+}
+
 function fillSelect(sel, items, valueKey, labelFn, selected) {
   sel.innerHTML = "";
   for (const item of items) {
@@ -54,16 +80,18 @@ function setError(err) {
 async function init() {
   state.meta = await fetchJSON("/api/meta");
   const d = state.meta.defaults;
+  const sel = window.GmrSession ? GmrSession.pick(d) : d;
 
-  fillSelect($("xmlSelect"), state.meta.xml_files, "path", (x) => x.path, d.xml);
-  fillSelect($("bvhSelect"), state.meta.bvh_files, "path", (x) => x.path, d.bvh);
+  fillSelect($("xmlSelect"), state.meta.xml_files, "path", (x) => x.path, sel.xml || d.xml);
+  fillSelect($("bvhSelect"), state.meta.bvh_files, "path", (x) => x.path, sel.bvh || d.bvh);
   fillSelect(
     $("bvhUnit"),
     state.meta.bvh_units,
     "unit",
     (u) => `${u.label}  (scale=${u.scale})`,
-    String(d.bvh_unit),
+    String(sel.bvh_unit ?? d.bvh_unit),
   );
+  [...$("bvhUnit").options].forEach((o) => { o.value = String(o.value); });
 
   const cfgSel = $("configSelect");
   cfgSel.innerHTML = "";
@@ -73,20 +101,21 @@ async function init() {
     opt.textContent = `${c.name}  (${c.dir})`;
     cfgSel.appendChild(opt);
   }
-  if (d.config && [...cfgSel.options].some((o) => o.value === d.config)) {
-    cfgSel.value = d.config;
+  const preferred = sel.config || d.config;
+  if (preferred && [...cfgSel.options].some((o) => o.value === preferred)) {
+    cfgSel.value = preferred;
   }
-  if (cfgSel.value) $("saveName").value = cfgSel.value.split("/").pop();
-
-  cfgSel.addEventListener("change", () => {
-    $("saveName").value = cfgSel.value.split("/").pop() || "stage5_config.json";
-  });
+  if (window.GmrSession) {
+    GmrSession.restore();
+    GmrSession.bind();
+  }
 
   $("btnReload").addEventListener("click", reloadWeights);
   $("btnSave").addEventListener("click", saveConfig);
   $("btnRetarget").addEventListener("click", runRetarget);
   $("btnPlay").addEventListener("click", () => setPlaying(true));
   $("btnPause").addEventListener("click", () => setPlaying(false));
+  bindSolverFlagInputs();
   $("btnTransReset").addEventListener("click", () => {
     state.robotOffset = [0, 0, 0];
     applyRobotTranslate();
@@ -139,9 +168,11 @@ async function reloadWeights() {
     if (data.config?.bvh_unit != null) {
       $("bvhUnit").value = String(data.config.bvh_unit);
     }
+    syncSolverFlagsFromConfig(state.config);
     state._pendingWeightRows = data.weight_rows || [];
     $("retargetHint").textContent = "Config 已加载。正在加载 scale/offset 预览…";
     await loadPreviewScene();
+    state.config = captureSolverFlags(state.config);
     const sorted = sortWeightsByRobotDfs(
       state._pendingWeightRows,
       state.frames[0]?.robot,
@@ -150,6 +181,7 @@ async function reloadWeights() {
     renderWeightPanel(sorted);
     $("retargetHint").textContent =
       "已显示 scale/offset 对比。点击「开始重定向并显示」处理全轨迹。";
+    if (window.GmrSession) GmrSession.capture();
   } catch (err) {
     setError(err);
   } finally {
@@ -331,9 +363,11 @@ async function runRetarget() {
         xml: $("xmlSelect").value,
         bvh: $("bvhSelect").value,
         config_path: state.configPath,
-        config: state.config,
+        config: captureSolverFlags(state.config),
         bvh_unit: Number($("bvhUnit").value),
         weight_rows: collectWeights(),
+        use_frame_joint_damper: $("optDamper")?.checked || false,
+        offset_to_ground: $("optOffsetToGround")?.checked || false,
       }),
     });
     state.jobId = start.job_id;
@@ -700,15 +734,18 @@ async function saveConfig() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         config_path: state.configPath,
-        base_config: state.config,
+        base_config: captureSolverFlags(state.config),
         filename: $("saveName").value.trim() || "stage5_config.json",
         overwrite: $("overwriteSrc").checked,
         save_to_ik_configs: $("saveToIk").checked,
         weight_rows: collectWeights(),
+        use_frame_joint_damper: $("optDamper")?.checked || false,
+        offset_to_ground: $("optOffsetToGround")?.checked || false,
       }),
     });
     $("saveStatus").textContent = `已保存: ${data.path}`;
     state.config = data.config;
+    syncSolverFlagsFromConfig(state.config);
     state.configPath = data.path;
 
     state.meta = await fetchJSON("/api/meta");
@@ -722,6 +759,10 @@ async function saveConfig() {
       cfgSel.appendChild(opt);
     }
     if ([...cfgSel.options].some((o) => o.value === cur)) cfgSel.value = cur;
+    if (window.GmrSession) {
+      GmrSession.capture();
+      GmrSession.syncSaveName();
+    }
   } catch (err) {
     setError(err);
   }

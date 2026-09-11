@@ -103,6 +103,18 @@ def _nodes_from_positions(
     return nodes
 
 
+def _select_preview_frames(frames: list, max_frames: int, sample: str):
+    """Pick preview frames. ``uniform`` spans the full clip; ``prefix`` is 0..N-1."""
+    n = len(frames)
+    k = min(max(1, int(max_frames)), n)
+    mode = (sample or "uniform").lower()
+    if k >= n or mode == "prefix":
+        idx = list(range(k))
+    else:
+        idx = np.unique(np.linspace(0, n - 1, k, dtype=int)).tolist()
+    return [frames[i] for i in idx], idx, n
+
+
 def run_preview_retarget(
     *,
     xml_path: str,
@@ -110,8 +122,15 @@ def run_preview_retarget(
     config: dict,
     bvh_unit: int | None = None,
     max_frames: int = 50,
+    sample: str = "uniform",
 ) -> dict[str, Any]:
-    """Retarget the first ``max_frames`` BVH frames and return skeleton JSON."""
+    """Retarget a short preview and return skeleton JSON.
+
+    Visualization matches Stage 5 (world-frame scaled human, no per-frame
+    hip origin lock). Height is measured on the full clip so a sitting /
+    falling prefix cannot shrink the human. By default ``sample="uniform"``
+    draws N frames across the whole trajectory rather than only 0..N-1.
+    """
     from general_motion_retargeting.params import ROBOT_BASE_DICT, ROBOT_XML_DICT
     from general_motion_retargeting import GeneralMotionRetargeting as GMR
     from tools.retargeting_visualizer.visualize_retargeting import (
@@ -133,11 +152,15 @@ def run_preview_retarget(
     if not bvh.exists():
         raise FileNotFoundError(f"BVH file not found: {bvh}")
 
-    human_frames, actual_human_height, frame_time, parser = load_bvh_all_frames(
-        bvh, start=0, end=int(max_frames), scale=scale,
+    all_frames, actual_human_height, frame_time, parser = load_bvh_all_frames(
+        bvh, start=None, end=None, scale=scale,
     )
-    if not human_frames:
+    if not all_frames:
         raise RuntimeError("No BVH frames loaded")
+    human_frames, source_indices, n_source = _select_preview_frames(
+        all_frames, int(max_frames), sample,
+    )
+    del all_frames
 
     human_edges = get_human_edges(parser)
 
@@ -172,18 +195,7 @@ def run_preview_retarget(
         mj.mj_forward(model, data0)
         robot_edges = get_robot_edges(get_robot_body_info(model, data0))
 
-        human_root = config.get("human_root_name") or "Hips"
-        robot_root = (
-            config.get("robot_root_name")
-            or ROBOT_BASE_DICT.get(custom_key)
-            or "base_link"
-        )
-
-        all_frame_data = _process_frames_for_stage3(
-            retargeter, human_frames, model,
-            human_root=human_root,
-            robot_root=robot_root,
-        )
+        all_frame_data = _process_frames_for_stage3(retargeter, human_frames, model)
     finally:
         try:
             tmp_ik.unlink(missing_ok=True)
@@ -214,6 +226,9 @@ def run_preview_retarget(
     return {
         "n_frames": len(frames_out),
         "max_frames": int(max_frames),
+        "n_source": int(n_source),
+        "source_indices": source_indices,
+        "sample": (sample or "uniform").lower(),
         "fps": fps,
         "actual_human_height": float(actual_human_height),
         "xml_path": xml.relative_to(PROJECT_ROOT).as_posix()
@@ -226,28 +241,14 @@ def run_preview_retarget(
     }
 
 
-def _process_frames_for_stage3(
-    retargeter,
-    human_frames,
-    model,
-    *,
-    human_root: str,
-    robot_root: str,
-):
-    """Retarget frames; display human IK targets with roots co-located at origin.
-
-    Differences vs ``process_all_frames`` (CLI visualizer):
-    - Human overlay uses the same ground-offset poses that IK solved against.
-    - Each frame is shifted so the human root sits at the world origin (robot
-      gets the same delta) — matches Stage-2 comparison UX and avoids a huge
-      world bbox that makes proportions look wrong.
-    """
+def _process_frames_for_stage3(retargeter, human_frames, model):
+    """Retarget frames; overlay in world frame (same as Stage 5 / CLI)."""
     all_data = []
     data_fk = mj.MjData(model)
 
-    print(f"\n  Processing {len(human_frames)} frames ...")
+    print(f"\n  Processing {len(human_frames)} preview frames ...")
     for fi, human_data in enumerate(human_frames):
-        qpos = retargeter.retarget(human_data, offset_to_ground=True)
+        qpos = retargeter.retarget(human_data)
 
         data_fk.qpos = qpos
         mj.mj_forward(model, data_fk)
@@ -259,39 +260,18 @@ def _process_frames_for_stage3(
                 robot_positions[name] = data_fk.xpos[i].copy()
                 robot_xmat[name] = data_fk.xmat[i].copy().reshape(3, 3)
 
-        # IK targets (scaled + offset + ground), not pre-ground scaled_human_data
-        human_for_ik = retargeter.offset_human_data_to_ground(
-            {
-                name: [val[0].copy(), val[1].copy()]
-                for name, val in retargeter.scaled_human_data.items()
-            }
-        )
-
-        # Co-locate human root at origin for display (same delta for robot)
-        if human_root in human_for_ik:
-            origin = np.asarray(human_for_ik[human_root][0], dtype=float).copy()
-        else:
-            # fallback: first available joint
-            origin = np.asarray(next(iter(human_for_ik.values()))[0], dtype=float).copy()
-
-        human_positions = {
-            name: np.asarray(val[0], dtype=float) - origin
-            for name, val in human_for_ik.items()
+        human_scaled = {
+            name: [val[0].copy(), val[1].copy()]
+            for name, val in retargeter.scaled_human_data.items()
         }
-        human_data_out = {
-            name: [human_positions[name], np.asarray(val[1], dtype=float).copy()]
-            for name, val in human_for_ik.items()
-        }
-        robot_positions = {
-            name: pos - origin for name, pos in robot_positions.items()
-        }
+        human_positions = {name: val[0] for name, val in human_scaled.items()}
 
         all_data.append({
             "qpos": qpos.copy(),
             "robot_positions": robot_positions,
             "robot_xmat": robot_xmat,
             "human_positions": human_positions,
-            "human_data": human_data_out,
+            "human_data": human_scaled,
         })
 
         if (fi + 1) % 100 == 0:

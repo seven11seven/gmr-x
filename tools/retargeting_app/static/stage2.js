@@ -49,20 +49,22 @@ function debounce(fn, ms) {
 async function init() {
   state.meta = await fetchJSON("/api/meta");
   const d = state.meta.defaults;
+  const sel = window.GmrSession ? GmrSession.pick(d) : d;
 
-  fillSelect($("xmlSelect"), state.meta.xml_files, "path", (x) => x.path, d.xml);
-  fillSelect($("bvhSelect"), state.meta.bvh_files, "path", (x) => x.path, d.bvh);
+  fillSelect($("xmlSelect"), state.meta.xml_files, "path", (x) => x.path, sel.xml || d.xml);
+  fillSelect($("bvhSelect"), state.meta.bvh_files, "path", (x) => x.path, sel.bvh || d.bvh);
   fillSelect(
     $("bvhUnit"),
     state.meta.bvh_units,
     "unit",
     (u) => `${u.label}  (scale=${u.scale})`,
-    String(d.bvh_unit),
+    String(sel.bvh_unit ?? d.bvh_unit),
   );
+  [...$("bvhUnit").options].forEach((o) => { o.value = String(o.value); });
 
   const cfgSel = $("configSelect");
   cfgSel.innerHTML = "";
-  let preferred = d.config;
+  let preferred = sel.config || d.config;
   for (const c of state.meta.ik_configs) {
     const opt = document.createElement("option");
     opt.value = c.path;
@@ -71,6 +73,10 @@ async function init() {
   }
   if (preferred && [...cfgSel.options].some((o) => o.value === preferred)) {
     cfgSel.value = preferred;
+  }
+  if (window.GmrSession) {
+    GmrSession.restore();
+    GmrSession.bind();
   }
 
   $("btnReload").addEventListener("click", () => reloadFromDisk());
@@ -106,14 +112,7 @@ async function init() {
     });
   });
 
-  // Pre-fill save name from selected config
-  cfgSel.addEventListener("change", () => {
-    const name = cfgSel.value.split("/").pop() || "stage2_config.json";
-    $("saveName").value = name;
-  });
-  if (cfgSel.value) {
-    $("saveName").value = cfgSel.value.split("/").pop();
-  }
+  // Save name follows the loaded IK config (GmrSession.bind).
 
   await reloadFromDisk();
 }
@@ -197,6 +196,7 @@ function ingestScene(data, opts = {}) {
   if (data.scene.bvh_unit != null) {
     $("bvhUnit").value = String(data.scene.bvh_unit);
   }
+  if (window.GmrSession) GmrSession.capture();
 
   const h = data.scene.detected_human_height;
   const ratio = data.scene.height_ratio;
@@ -758,6 +758,10 @@ async function saveConfig() {
       cfgSel.appendChild(opt);
     }
     if ([...cfgSel.options].some((o) => o.value === cur)) cfgSel.value = cur;
+    if (window.GmrSession) {
+      GmrSession.capture();
+      GmrSession.syncSaveName();
+    }
   } catch (err) {
     setError(err);
   }
