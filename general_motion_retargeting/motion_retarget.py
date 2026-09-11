@@ -473,14 +473,14 @@ class GeneralMotionRetargeting:
 
         R_root = R.from_quat(root_quat, scalar_first=True).as_matrix()
 
-        # scale other body parts in root-local frame, per-axis
+        # scale other body parts in root-local frame, per-axis.
+        # Joints missing from the table inherit the root scale so a left-only
+        # match table cannot shrink one arm/leg while leaving the rest raw.
         for body_name in human_data.keys():
-            if body_name not in scale_table_vertical:
-                continue
             if body_name == human_root_name:
                 continue
-            sv_b = scale_table_vertical[body_name]
-            sh_b = scale_table_horizontal[body_name]
+            sv_b = scale_table_vertical.get(body_name, sv)
+            sh_b = scale_table_horizontal.get(body_name, sh)
             local_pos = human_data[body_name][0] - root_pos
             local_in_root = R_root.T @ local_pos
             scaled_in_root = local_in_root * np.array([sh_b, sh_b, sv_b])

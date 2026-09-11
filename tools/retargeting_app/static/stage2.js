@@ -535,7 +535,8 @@ function drawScene(scene) {
   const robotMapped = new Set(scene.robot_mapped || []);
   const humanMapped = new Set(scene.human_mapped || []);
   const robotNodes = scene.robot.nodes;
-  const humanNodes = scene.human.nodes;
+  const visHuman = filterHumanSkeletonForVis(scene.human.nodes, scene.human.edges);
+  const humanNodes = visHuman.nodes;
   // Roots already aligned at origin — no side-by-side offset
   const offset = [0, 0, 0];
 
@@ -600,7 +601,7 @@ function drawScene(scene) {
     hovertemplate: "<b>%{text}</b><br>human<br>(%{x:.3f}, %{y:.3f}, %{z:.3f})<extra></extra>",
   });
 
-  const hEdges = edgeSegments(humanByName, scene.human.edges, offset);
+  const hEdges = edgeSegments(humanByName, visHuman.edges, offset);
   traces.push({
     type: "scatter3d", mode: "lines", name: "human bones", legendgroup: "human",
     x: hEdges.x, y: hEdges.y, z: hEdges.z,

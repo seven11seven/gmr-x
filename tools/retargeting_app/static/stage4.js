@@ -5,6 +5,7 @@ const state = {
   config: null,
   configPath: null,
   frames: [],
+  humanEdges: [],
   frameIdx: 0,
   mode: "preview", // "preview" (scale+offset) | "retarget"
   robotOffset: [0, 0, 0],
@@ -172,6 +173,7 @@ async function loadPreviewScene() {
   const scene = data.scene;
   state.config = data.config || state.config;
   state.mode = "preview";
+  state.humanEdges = scene.human?.edges || [];
   state.frames = [{
     robot: scene.robot,
     human: scene.human,
@@ -407,7 +409,11 @@ function drawCurrentFrame() {
   }
   const frame = state.frames[state.frameIdx];
   const robotNodes = frame.robot.nodes;
-  const humanNodes = frame.human.nodes;
+  const visHuman = filterHumanSkeletonForVis(
+    frame.human.nodes,
+    frame.human.edges || state.humanEdges || [],
+  );
+  const humanNodes = visHuman.nodes;
   const robotByName = Object.fromEntries(robotNodes.map((n) => [n.name, n]));
   const humanByName = Object.fromEntries(humanNodes.map((n) => [n.name, n]));
 
@@ -460,7 +466,7 @@ function drawCurrentFrame() {
     hovertemplate: "<b>%{text}</b><br>human<br>(%{x:.3f}, %{y:.3f}, %{z:.3f})<extra></extra>",
   });
 
-  const hEdges = edgeSegments(humanByName, frame.human.edges, [0, 0, 0]);
+  const hEdges = edgeSegments(humanByName, visHuman.edges, [0, 0, 0]);
   traces.push({
     type: "scatter3d", mode: "lines", name: "human bones", legendgroup: "human",
     x: hEdges.x, y: hEdges.y, z: hEdges.z,

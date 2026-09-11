@@ -290,7 +290,11 @@ function drawScene() {
     return;
   }
   const robotNodes = state.robot.nodes;
-  const humanNodes = state.human?.nodes || [];
+  const visHuman = filterHumanSkeletonForVis(
+    state.human?.nodes || [],
+    state.human?.edges || [],
+  );
+  const humanNodes = visHuman.nodes;
   const robotByName = Object.fromEntries(robotNodes.map((n) => [n.name, n]));
   const humanByName = Object.fromEntries(humanNodes.map((n) => [n.name, n]));
 
@@ -345,7 +349,7 @@ function drawScene() {
       marker: { size: 4, color: C_HUMAN_MAP, line: { width: 1, color: "#111" } },
       hovertemplate: "<b>%{text}</b><br>human<br>(%{x:.3f}, %{y:.3f}, %{z:.3f})<extra></extra>",
     });
-    const hEdges = edgeSegments(humanByName, state.human.edges || [], [0, 0, 0]);
+    const hEdges = edgeSegments(humanByName, visHuman.edges, [0, 0, 0]);
     traces.push({
       type: "scatter3d", mode: "lines", name: "human bones", legendgroup: "human",
       x: hEdges.x, y: hEdges.y, z: hEdges.z,

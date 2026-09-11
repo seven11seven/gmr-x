@@ -39,15 +39,21 @@ HUMAN_SHOULDER_R = ("RightShoulder", "RightCollar")
 
 ROBOT_ELBOW_L = ("aux_left_elbow", "left_elbow_pitch_link", "left_elbow_link")
 ROBOT_ELBOW_R = ("aux_right_elbow", "right_elbow_pitch_link", "right_elbow_link")
-HUMAN_ELBOW_L = ("LeftElbow",)
-HUMAN_ELBOW_R = ("RightElbow",)
+# Xsens: LeftElbow; Mixamo / HiPHI / FZ / qtong: LeftForeArm
+HUMAN_ELBOW_L = (
+    "LeftElbow", "LeftForeArm", "LeftForearm", "Left_Elbow", "left_elbow",
+)
+HUMAN_ELBOW_R = (
+    "RightElbow", "RightForeArm", "RightForearm", "Right_Elbow", "right_elbow",
+)
+ELBOW_NAME_TOKENS = ("elbow", "forearm")
 
 # Human bone groups for scale assignment
 LOWER_BODY_TOKENS = (
-    "hip", "knee", "ankle", "toe", "foot", "hips", "pelvis",
+    "hip", "knee", "ankle", "toe", "foot", "hips", "pelvis", "upleg", "leg",
 )
 UPPER_LIMB_TOKENS = (
-    "shoulder", "elbow", "wrist", "hand", "collar",
+    "shoulder", "elbow", "wrist", "hand", "collar", "forearm", "arm",
 )
 TORSO_TOKENS = (
     "chest", "spine", "neck", "head", "torso", "thorax",
@@ -61,6 +67,9 @@ WIDTH_BONE_TOKENS = (
 )
 
 
+_HAND_JUNK = ("thumb", "index", "middle", "ring", "pinky", "finger", "palm")
+
+
 def _find_name(names: set[str] | list[str], candidates: tuple[str, ...]) -> str | None:
     name_set = set(names)
     for c in candidates:
@@ -71,6 +80,42 @@ def _find_name(names: set[str] | list[str], candidates: tuple[str, ...]) -> str 
     for c in candidates:
         if c.lower() in lower_map:
             return lower_map[c.lower()]
+    return None
+
+
+def _find_by_side_token(
+    names: set[str] | list[str],
+    side: str,
+    tokens: tuple[str, ...],
+) -> str | None:
+    """Match Mixamo-style names like LeftForeArm when LeftElbow is absent."""
+    side_l = side.lower()
+    other = "right" if side_l == "left" else "left"
+    hits: list[str] = []
+    for n in names:
+        nl = n.lower()
+        if any(j in nl for j in _HAND_JUNK):
+            continue
+        if side_l not in nl or other in nl:
+            continue
+        if any(t in nl for t in tokens):
+            hits.append(n)
+    if not hits:
+        return None
+    hits.sort(key=len)
+    return hits[0]
+
+
+def _mapped_human(
+    robot_to_human: dict[str, str] | None,
+    robot_name: str | None,
+    human_names: set[str] | list[str],
+) -> str | None:
+    if not robot_to_human or not robot_name:
+        return None
+    mapped = robot_to_human.get(robot_name)
+    if mapped and mapped in set(human_names):
+        return mapped
     return None
 
 
@@ -230,6 +275,7 @@ def estimate_scales(
     human_root_name: str | None,
     bone_names: list[str],
     height_ratio: float = 1.0,
+    robot_to_human: dict[str, str] | None = None,
 ) -> tuple[dict[str, float], dict[str, float], dict[str, Any]]:
     """Estimate V/H scale tables from raw T-pose geometry.
 
@@ -259,8 +305,16 @@ def estimate_scales(
     h_sr = _find_name(h_names, HUMAN_SHOULDER_R)
     r_el = _find_name(r_names, ROBOT_ELBOW_L)
     r_er = _find_name(r_names, ROBOT_ELBOW_R)
-    h_el = _find_name(h_names, HUMAN_ELBOW_L)
-    h_er = _find_name(h_names, HUMAN_ELBOW_R)
+    h_el = (
+        _find_name(h_names, HUMAN_ELBOW_L)
+        or _mapped_human(robot_to_human, r_el, h_names)
+        or _find_by_side_token(h_names, "left", ELBOW_NAME_TOKENS)
+    )
+    h_er = (
+        _find_name(h_names, HUMAN_ELBOW_R)
+        or _mapped_human(robot_to_human, r_er, h_names)
+        or _find_by_side_token(h_names, "right", ELBOW_NAME_TOKENS)
+    )
 
     missing = [k for k, v in {
         "robot_ankle_L": r_al, "robot_ankle_R": r_ar,
@@ -442,6 +496,14 @@ def auto_estimate(
     assumption = float(config.get("human_height_assumption", 1.8) or 1.8)
     height_ratio = (detected / assumption) if detected is not None else 1.0
 
+    robot_to_human = {}
+    for rb, entry in (config.get("ik_match_table1") or {}).items():
+        if not entry:
+            continue
+        single = entry[0] if isinstance(entry[0], list) else entry
+        if single and single[0]:
+            robot_to_human[rb] = single[0]
+
     scale_v, scale_h, scale_meta = estimate_scales(
         raw["robot"]["nodes"],
         raw["human"]["nodes"],
@@ -449,6 +511,7 @@ def auto_estimate(
         human_root_name=config.get("human_root_name"),
         bone_names=bone_names,
         height_ratio=height_ratio,
+        robot_to_human=robot_to_human,
     )
     scale_meta["detected_human_height"] = detected
     scale_meta["human_height_assumption"] = assumption

@@ -75,6 +75,7 @@ async function init() {
 
   $("btnLoad").addEventListener("click", loadScene);
   $("btnAddMap").addEventListener("click", () => addMappingRow("", ""));
+  $("btnMirrorLR").addEventListener("click", applyLeftToRightSymmetry);
   $("btnSave").addEventListener("click", saveConfig);
   $("btnPreview").addEventListener("click", previewConfig);
   $("bvhUnit").addEventListener("change", () => {
@@ -140,13 +141,16 @@ function addMappingRow(robot, human) {
   const row = document.createElement("div");
   row.className = "map-row";
 
+  const pair = document.createElement("div");
+  pair.className = "map-pair";
+
   const rSel = document.createElement("select");
   rSel.className = "robot-sel";
   fillSelect(rSel, [""].concat(robotNames()), null, (v) => v || "— robot —", robot);
 
   const arrow = document.createElement("span");
   arrow.className = "arrow";
-  arrow.textContent = "→";
+  arrow.textContent = "↓";
 
   const hSel = document.createElement("select");
   hSel.className = "human-sel";
@@ -165,13 +169,89 @@ function addMappingRow(robot, human) {
   rSel.addEventListener("change", onMappingChanged);
   hSel.addEventListener("change", onMappingChanged);
 
-  row.append(rSel, arrow, hSel, rm);
+  pair.append(rSel, arrow, hSel);
+  row.append(pair, rm);
   list.appendChild(row);
 }
 
 function onMappingChanged() {
   state.mapping = mappingFromRows();
   if (state.scene) drawScene(state.scene, state.mapping);
+}
+
+/** True if name has a left side token: left_*, *_left_*, LeftXxx, LEFT_*. */
+function hasLeftToken(name) {
+  return /(?:^|_)left(?=_|$)|Left|LEFT/.test(name || "");
+}
+
+/** left/Left/LEFT → right/Right/RIGHT (and the reverse). */
+function swapSide(name, toRight) {
+  const a = toRight ? "Left" : "Right";
+  const b = toRight ? "Right" : "Left";
+  const aa = toRight ? "LEFT" : "RIGHT";
+  const bb = toRight ? "RIGHT" : "LEFT";
+  const aaa = toRight ? "left" : "right";
+  const bbb = toRight ? "right" : "left";
+  return String(name).split(a).join(b).split(aa).join(bb).split(aaa).join(bbb);
+}
+
+/**
+ * Mirror every left_* / *_left_* robot mapping onto the corresponding right
+ * link (and Left* human bone → Right*). Existing right rows are overwritten.
+ */
+function applyLeftToRightSymmetry() {
+  const status = $("mapStatus");
+  if (status) {
+    status.classList.remove("err");
+    status.textContent = "";
+  }
+  const rSet = new Set(robotNames());
+  const hSet = new Set(humanNames());
+  const map = mappingFromRows();
+  const extras = [];
+  const updates = {};
+  const missing = [];
+
+  for (const [robot, human] of Object.entries(map)) {
+    if (!hasLeftToken(robot)) continue;
+    const rR = swapSide(robot, true);
+    if (!rR || rR === robot) continue;
+    if (!rSet.has(rR)) {
+      missing.push(rR);
+      continue;
+    }
+    const hR = hasLeftToken(human) ? swapSide(human, true) : human;
+    if (!hR || !hSet.has(hR)) {
+      missing.push(`${rR} ← ${hR || "?"}`);
+      continue;
+    }
+    if (map[rR] == null) extras.push([rR, hR]);
+    else if (map[rR] !== hR) updates[rR] = hR;
+  }
+
+  if (!extras.length && !Object.keys(updates).length) {
+    if (status) {
+      status.classList.add("err");
+      status.textContent = missing.length
+        ? `没有可写入的右侧映射。缺失: ${missing.slice(0, 4).join(", ")}`
+        : "没有可对称的 left_* / *_left_* 映射";
+    }
+    return;
+  }
+
+  for (const row of document.querySelectorAll("#mappingList .map-row")) {
+    const r = row.querySelector(".robot-sel").value;
+    if (updates[r]) row.querySelector(".human-sel").value = updates[r];
+  }
+  for (const [r, h] of extras) addMappingRow(r, h);
+  onMappingChanged();
+
+  if (status) {
+    const bits = [];
+    if (extras.length) bits.push(`新增 ${extras.length}`);
+    if (Object.keys(updates).length) bits.push(`更新 ${Object.keys(updates).length}`);
+    status.textContent = `已对称 left → right（${bits.join("，")}）`;
+  }
 }
 
 async function loadScene() {
@@ -330,7 +410,8 @@ function drawScene(scene, mapping) {
   const robotMapped = new Set(Object.keys(mapping || {}));
   const humanMapped = new Set(Object.values(mapping || {}));
   const robotNodes = scene.robot.nodes;
-  const humanNodes = scene.human.nodes;
+  const visHuman = filterHumanSkeletonForVis(scene.human.nodes, scene.human.edges);
+  const humanNodes = visHuman.nodes;
   const offset = computeHumanOffset(robotNodes, humanNodes);
 
   const robotByName = Object.fromEntries(robotNodes.map((n) => [n.name, n]));
@@ -401,7 +482,7 @@ function drawScene(scene, mapping) {
     hovertemplate: "<b>%{text}</b><br>human<br>(%{x:.3f}, %{y:.3f}, %{z:.3f})<extra></extra>",
   });
 
-  const hEdges = edgeSegments(humanByName, scene.human.edges, offset);
+  const hEdges = edgeSegments(humanByName, visHuman.edges, offset);
   traces.push({
     type: "scatter3d", mode: "lines", name: "human bones",
     legendgroup: "human",

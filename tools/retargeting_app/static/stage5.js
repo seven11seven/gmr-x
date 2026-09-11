@@ -538,11 +538,15 @@ function drawCurrentFrame() {
   }
   const frame = state.frames[state.frameIdx];
   const robotNodes = frame.robot.nodes;
-  const humanNodes = frame.human.nodes;
+  const visHuman = filterHumanSkeletonForVis(
+    frame.human.nodes,
+    frame.human.edges || state.humanEdges || [],
+  );
+  const humanNodes = visHuman.nodes;
   const robotByName = Object.fromEntries(robotNodes.map((n) => [n.name, n]));
   const humanByName = Object.fromEntries(humanNodes.map((n) => [n.name, n]));
   const rEdgeList = frame.robot.edges || state.robotEdges || [];
-  const hEdgeList = frame.human.edges || state.humanEdges || [];
+  const hEdgeList = visHuman.edges;
 
   const traces = [];
   const robotTraceStart = 0;

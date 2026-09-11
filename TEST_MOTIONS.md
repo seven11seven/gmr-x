@@ -3,6 +3,9 @@
 We list some test motions here that are not easy for retargeting (i.e., sometimes giving bad results).
 The [x] means the motion is retargeted successfully.
 
+- [ ] 加入 BVH 默认进入 T-POS 功能
+- [ ] 加入 关节设置镜像功能
+- [ ] 对 stage 1 的关节 mapping pannel 面积增大
 
 # AMASS
 

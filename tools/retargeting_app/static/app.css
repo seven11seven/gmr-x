@@ -73,6 +73,103 @@ body {
   gap: 0;
 }
 
+/* Stage-1 layout (total width w):
+ * col1 输入 / 根节点 / 保存 : [0,     w/6]
+ * col2 Link ↔ Bone Mapping : [w/6,   w/3]
+ * col3 骨骼可视化           : [w/3,   w]
+ */
+.layout.stage1-layout {
+  grid-template-columns: 1fr 1fr 4fr;
+  min-height: 0;
+}
+
+.stage1-layout .panel-col {
+  max-height: none;
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  border-right: 1px solid var(--line);
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.stage1-layout .panel-col:nth-child(2) {
+  overflow: hidden;
+}
+
+.stage1-layout .card-fill {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  margin: 0;
+}
+
+.stage1-layout .mapping-list-fill {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  max-height: none;
+}
+
+.stage1-layout .map-actions {
+  display: flex;
+  gap: 0.3rem;
+  flex-shrink: 0;
+}
+.stage1-layout .map-actions button {
+  width: auto;
+  padding: 0.28rem 0.5rem;
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+.stage1-layout .card-head {
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+.stage1-layout #mapStatus {
+  margin: 0 0 0.45rem;
+  min-height: 0;
+  font-size: 0.72rem;
+}
+.stage1-layout .map-row {
+  display: grid;
+  grid-template-columns: 1fr 28px;
+  gap: 0.35rem;
+  align-items: start;
+  background: #161c24;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.45rem 0.5rem;
+}
+
+.stage1-layout .map-pair {
+  display: flex;
+  flex-direction: column;
+  gap: 0.28rem;
+  min-width: 0;
+}
+
+.stage1-layout .map-row select {
+  margin: 0;
+  font-size: 0.82rem;
+  padding: 0.42rem 0.5rem;
+}
+
+.stage1-layout .map-row .arrow {
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.72rem;
+  line-height: 1;
+}
+
+.stage1-layout .map-row .rm {
+  padding: 0.15rem;
+  margin-top: 0.15rem;
+}
+
 .panel {
   overflow: auto;
   padding: 0.9rem;
@@ -546,6 +643,15 @@ a.step:hover { border-color: #3d6f9c; color: var(--text); }
 @media (max-width: 900px) {
   .layout { grid-template-columns: 1fr; grid-template-rows: auto 55vh; }
   .panel { border-right: none; border-bottom: 1px solid var(--line); max-height: 48vh; }
+  .layout.stage1-layout {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto;
+  }
+  .stage1-layout .panel-col:nth-child(2) {
+    overflow: auto;
+    max-height: 50vh;
+  }
+  .stage1-layout .viewport { min-height: 45vh; }
   .layout.stage2-layout {
     grid-template-columns: 1fr;
     grid-template-rows: auto;

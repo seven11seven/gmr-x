@@ -113,13 +113,90 @@ def get_robot_body_edges(bodies):
 # BVH helpers
 # ===================================================================
 
-def load_bvh_first_frame(bvh_path, bvh_format="3DSM", scale=0.01):
+def _attach_footmod_and_edges(parser, frame_data: dict):
+    """Add synthetic FootMod joints and parent→child edges."""
+    for side in ("Left", "Right"):
+        ankle_candidates = [f"{side}Ankle", f"{side}Foot"]
+        toe_candidates = [f"{side}Toe", f"{side}ToeBase"]
+        ankle_name = next((n for n in ankle_candidates if n in frame_data), None)
+        toe_name = next((n for n in toe_candidates if n in frame_data), None)
+        mod = f"{side}FootMod"
+        if ankle_name and toe_name:
+            frame_data[mod] = [
+                frame_data[ankle_name][0].copy(),
+                frame_data[toe_name][1].copy(),
+            ]
+
+    edges = []
+    name_set = set(frame_data.keys())
+    for i, name in enumerate(parser.names):
+        if name.endswith("_end_site"):
+            continue
+        pi = parser.parents[i]
+        if pi < 0:
+            continue
+        pname = parser.names[pi]
+        if (not pname.endswith("_end_site")
+                and pname in name_set and name in name_set):
+            edges.append((pname, name))
+    for side in ("Left", "Right"):
+        mod = f"{side}FootMod"
+        if mod in frame_data:
+            ankle_candidates = [f"{side}Ankle", f"{side}Foot"]
+            ankle_name = next((n for n in ankle_candidates if n in frame_data), None)
+            if ankle_name:
+                edges.append((ankle_name, mod))
+    return frame_data, edges
+
+
+def tpose_frame_from_parser(parser):
+    """Build a T-pose like ``dance_13.bvh`` frame 0: all local rotations 0.
+
+    Local translations stay at rest OFFSET. The root is lifted so the lowest
+    joint (typically a foot) sits on z=0 — same as dance_13's
+    ``0  <hip_height>  0`` plus zeros.
+    """
+    from general_motion_retargeting.utils.xsens_vendor.BVHParser import quat_fk
+
+    n = len(parser.names)
+    lrot = np.zeros((1, n, 4), dtype=np.float64)
+    lrot[..., 0] = 1.0
+    lpos = np.asarray(parser.offsets, dtype=np.float64)[np.newaxis].copy()
+    parents = np.asarray(parser.parents, dtype=int)
+
+    _gquat, gpos = quat_fk(lrot, lpos, parents)
+    min_z = float(np.min(gpos[0, :, 2]))
+    lpos[0, 0, 2] -= min_z
+    gquat, gpos = quat_fk(lrot, lpos, parents)
+
+    frame_data: dict = {}
+    for ji, name in enumerate(parser.names):
+        if name.endswith("_end_site"):
+            continue
+        frame_data[name] = [gpos[0, ji].copy(), gquat[0, ji].copy()]
+    return frame_data
+
+
+def load_bvh_first_frame(bvh_path, bvh_format="3DSM", scale=0.01, use_tpose=True):
+    """Load the pose used for Stage-1/2/3 alignment.
+
+    By default this is a synthesized T-pose from the BVH hierarchy (all local
+    rotations zero, hips raised so feet rest on z=0), matching the extra
+    frame-0 convention in ``datas/fz/dance_13.bvh``. Pass ``use_tpose=False``
+    to use the file's actual first motion frame instead.
+    """
     from general_motion_retargeting.utils.xsens_vendor.BVHParser import (
         BVHParser, quat_fk, remove_quat_discontinuities,
     )
     p = BVHParser("zxy", scale)
     with open(bvh_path, "r") as fh:
         content = fh.read()
+
+    if use_tpose:
+        p.parse_hierarchy(content)
+        frame_data = tpose_frame_from_parser(p)
+        return _attach_footmod_and_edges(p, frame_data)
+
     rotations, positions = p.parse(content, start=0, end=1,
                                    reset_to_zero=False)
     quats = p.rotations_to_quats(rotations)
@@ -135,38 +212,7 @@ def load_bvh_first_frame(bvh_path, bvh_format="3DSM", scale=0.01):
             global_positions[0, ji].copy(),
             global_quats[0, ji].copy(),
         ]
-    for side in ("Left", "Right"):
-        # Try multiple naming conventions for ankle/toe joints across BVH files
-        ankle_candidates = [f"{side}Ankle", f"{side}Foot"]
-        toe_candidates = [f"{side}Toe", f"{side}ToeBase"]
-        ankle_name = next((n for n in ankle_candidates if n in frame_data), None)
-        toe_name = next((n for n in toe_candidates if n in frame_data), None)
-        mod = f"{side}FootMod"
-        if ankle_name and toe_name:
-            frame_data[mod] = [frame_data[ankle_name][0].copy(),
-                               frame_data[toe_name][1].copy()]
-
-    edges = []
-    name_set = set(frame_data.keys())
-    for i, name in enumerate(p.names):
-        if name.endswith("_end_site"):
-            continue
-        pi = p.parents[i]
-        if pi < 0:
-            continue
-        pname = p.names[pi]
-        if (not pname.endswith("_end_site")
-                and pname in name_set and name in name_set):
-            edges.append((pname, name))
-    for side in ("Left", "Right"):
-        mod = f"{side}FootMod"
-        if mod in frame_data:
-            # Find the actual ankle joint name used in this BVH
-            ankle_candidates = [f"{side}Ankle", f"{side}Foot"]
-            ankle_name = next((n for n in ankle_candidates if n in frame_data), None)
-            if ankle_name:
-                edges.append((ankle_name, mod))
-    return frame_data, edges
+    return _attach_footmod_and_edges(p, frame_data)
 
 
 def detect_bvh_human_height(human_data):
@@ -235,7 +281,12 @@ def process_human_data(human_data, ik_config, ratio=1.0):
     ground = ik_config.get("ground_height", 0.0) * np.array([0, 0, 1])
 
     root_pos, root_quat = human_data[human_root]
-    sv_r, sh_r = sv_table.get(human_root, 1.0), sh_table.get(human_root, 1.0)
+    # Joints omitted from the scale table still receive the global height
+    # ratio (table values are extra per-bone multipliers, default 1.0).
+    # Otherwise mapped left bones shrink while the rest of the T-pose does
+    # not — left arm drops and LeftLeg / LeftToeBase / LeftFootMod detach.
+    sv_r = sv_table.get(human_root, ratio)
+    sh_r = sh_table.get(human_root, ratio)
     scaled_root = root_pos * np.array([sh_r, sh_r, sv_r])
     # Match GMR.scale_human_data: anisotropic scale in pelvis/root local frame
     # so prone poses are not stretched by world-XY "horizontal" factors.
@@ -246,13 +297,11 @@ def process_human_data(human_data, ik_config, ratio=1.0):
         if name == human_root:
             continue
         lp = human_data[name][0] - root_pos
-        if name in sv_table:
-            lp_root = R_root.T @ lp
-            lp_root = lp_root * np.array([
-                sh_table[name], sh_table[name], sv_table[name],
-            ])
-            lp = R_root @ lp_root
-        local[name] = lp
+        sv = sv_table.get(name, sv_r)
+        sh = sh_table.get(name, sh_r)
+        lp_root = R_root.T @ lp
+        lp_root = lp_root * np.array([sh, sh, sv])
+        local[name] = R_root @ lp_root
     scaled: dict = {human_root: (scaled_root, root_quat)}
     for name, lp in local.items():
         scaled[name] = (lp + scaled_root, human_data[name][1])

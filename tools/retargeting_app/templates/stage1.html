@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>GMR · Stage 1 — Links ↔ Bones</title>
   <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
-  <link rel="stylesheet" href="/static/app.css" />
+  <link rel="stylesheet" href="/static/app.css?v=stage1-mirror-1" />
 </head>
 <body>
   <header class="topbar">
@@ -25,8 +25,8 @@
     </div>
   </header>
 
-  <main class="layout">
-    <aside class="panel">
+  <main class="layout stage1-layout">
+    <aside class="panel panel-col">
       <section class="card">
         <h2>输入文件</h2>
         <label>Robot XML
@@ -57,15 +57,6 @@
         </label>
       </section>
 
-      <section class="card grow">
-        <div class="card-head">
-          <h2>Link ↔ Bone Mapping</h2>
-          <button id="btnAddMap" class="ghost" type="button">+ 添加</button>
-        </div>
-        <div id="mappingList" class="mapping-list"></div>
-        <p class="hint">绿色 = 已映射 robot / 橙色 = 已映射 human</p>
-      </section>
-
       <section class="card">
         <h2>保存 Config</h2>
         <label>文件名
@@ -80,6 +71,21 @@
           <button id="btnSave" class="primary" type="button">保存</button>
         </div>
         <p class="status" id="saveStatus"></p>
+      </section>
+    </aside>
+
+    <aside class="panel panel-col">
+      <section class="card card-fill">
+        <div class="card-head">
+          <h2>Link ↔ Bone Mapping</h2>
+          <div class="map-actions">
+            <button id="btnMirrorLR" class="ghost" type="button" title="将 left_* / *_left_* 映射对称到 right">左 → 右</button>
+            <button id="btnAddMap" class="ghost" type="button">+ 添加</button>
+          </div>
+        </div>
+        <p class="hint">left_* / *_left_* 可一键对称到 right。绿色 = robot 已映射 / 橙色 = human 已映射</p>
+        <p class="status" id="mapStatus"></p>
+        <div id="mappingList" class="mapping-list mapping-list-fill"></div>
       </section>
     </aside>
 
@@ -101,6 +107,7 @@
     </form>
   </dialog>
 
-  <script src="/static/app.js"></script>
+  <script src="/static/human_vis.js?v=hand-filter-1"></script>
+  <script src="/static/app.js?v=stage1-mirror-1"></script>
 </body>
 </html>

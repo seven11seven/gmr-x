@@ -527,6 +527,34 @@ class BVHParser:
 
         return result
 
+    def parse_hierarchy(self, text):
+        """Parse HIERARCHY only (offsets / parents / names). Stops at MOTION."""
+        lines = text.strip().split("\n")
+        i = 0
+        self._init_HIERARCHY_paser_stack()
+        mode = ""
+        while i < len(lines):
+            self.line = lines[i].strip()
+            if not self.line:
+                i += 1
+                continue
+            if self.line.startswith("HIERARCHY"):
+                mode = "HIERARCHY"
+                i += 1
+                continue
+            if self.line.startswith("MOTION"):
+                break
+            if mode == "HIERARCHY":
+                self._HIERARCHY_paser(i)
+            i += 1
+        if self.stack:
+            raise ValueError(
+                "HIERARCHY parsing incomplete: stack not empty, missing closing braces"
+            )
+        if not self.root:
+            raise ValueError("No ROOT node found in hierarchy")
+        return self
+
     def parse(self, text, start=None, end=None, reset_to_zero=False):
         lines = text.strip().split("\n")
         i = 0
