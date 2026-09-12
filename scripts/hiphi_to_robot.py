@@ -380,7 +380,11 @@ def _rgba_str(rgba: tuple[float, float, float, float]) -> str:
 #  Combined MuJoCo scene: robot XML + mocap object meshes
 # ---------------------------------------------------------------------------
 
-def build_scene_xml(robot_xml: Path, objects: list[HiphiObject]) -> str:
+def build_scene_xml(
+    robot_xml: Path,
+    objects: list[HiphiObject],
+    smplx_obj: Path | None = None,
+) -> str:
     tree = ET.parse(robot_xml)
     root = tree.getroot()
 
@@ -420,6 +424,26 @@ def build_scene_xml(robot_xml: Path, objects: list[HiphiObject]) -> str:
             group="1",
         )
         obj._body_name = body_name  # type: ignore[attr-defined]
+
+    if smplx_obj is not None:
+        mesh_name = _unique_name("smplx_mesh", used_names)
+        ET.SubElement(
+            asset, "mesh",
+            name=mesh_name,
+            file=str(Path(smplx_obj).resolve()),
+            scale="1 1 1",
+        )
+        body = ET.SubElement(world, "body", name="smplx_human")
+        ET.SubElement(
+            body, "geom",
+            name="smplx_human_geom",
+            type="mesh",
+            mesh=mesh_name,
+            rgba="0.92 0.72 0.58 0.55",
+            contype="0",
+            conaffinity="0",
+            group="2",
+        )
 
     return ET.tostring(root, encoding="unicode")
 
@@ -523,6 +547,20 @@ def _draw_human_overlay(viewer, human_data: dict) -> None:
             rgba=[1.0, 0.45, 0.12, 0.85],
         )
         viewer.user_scn.ngeom += 1
+
+
+def _upload_mesh_verts(viewer, model: mj.MjModel, mesh_id: int, verts: np.ndarray) -> None:
+    adr = int(model.mesh_vertadr[mesh_id])
+    nvert = int(model.mesh_vertnum[mesh_id])
+    if verts.shape[0] != nvert:
+        raise ValueError(f"SMPL-X vert count {verts.shape[0]} != mesh {nvert}")
+    model.mesh_vert[adr:adr + nvert] = np.asarray(verts, dtype=model.mesh_vert.dtype)
+    sim = viewer._sim() if hasattr(viewer, "_sim") else None
+    con = None
+    if sim is not None:
+        con = getattr(sim, "con", None) or getattr(sim, "_con", None)
+    if con is not None:
+        mj.mjr_uploadMesh(model, con, int(mesh_id))
 
 
 def launch_viewer(
