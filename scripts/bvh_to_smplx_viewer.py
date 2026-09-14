@@ -38,7 +38,7 @@ import mujoco as mj
 import mujoco.viewer as mjv
 
 from general_motion_retargeting.utils.smplx_from_mixamo import (
-    SMPLX_JOINT_LEFT_FOOT,
+    SMPLX_JOINT_LEFT_ANKLE,
     MixamoToSMPLX,
     write_obj,
 )
@@ -59,8 +59,11 @@ from hiphi_to_robot import (
 DEFAULT_CLIP = "Change_posture-sit_down_0002"
 DEFAULT_SMPLX = _PROJECT_ROOT / "assets" / "smpl-x"
 MESH_SCALE = 0.01
-_TOE_NAMES = ("LeftToeBase", "LeftToe", "LeftFoot")
+_FOOT_NAMES = ("LeftFoot", "LeftAnkle")
 _FINGER_MARKERS = ("HandIndex", "HandMiddle", "HandRing", "HandPinky", "HandThumb")
+# Extra world length on top of Mixamo bone-fit (thigh = hip→knee, shin = knee→ankle).
+LEG_EXTRA_THIGH_M = 0.04
+LEG_EXTRA_SHIN_M = 0.04
 
 
 def _is_body_joint(name: str) -> bool:
@@ -89,7 +92,7 @@ def _draw_bvh_skeleton(viewer, positions: dict, edges: list[tuple[str, str]]) ->
         return True
 
     for name, pos in positions.items():
-        if name == "LeftToeBase":
+        if name == "LeftFoot":
             rgba = [1.0, 0.25, 0.15, 0.95]
             radius = 0.022
         elif name == "Hips":
@@ -126,12 +129,12 @@ def _draw_bvh_skeleton(viewer, positions: dict, edges: list[tuple[str, str]]) ->
             return
 
 
-def _bvh_left_toe(human_data: dict) -> np.ndarray:
-    for name in _TOE_NAMES:
+def _bvh_left_foot(human_data: dict) -> np.ndarray:
+    for name in _FOOT_NAMES:
         pose = human_data.get(name)
         if pose is not None:
             return np.asarray(pose[0], dtype=np.float64)
-    raise KeyError("BVH frame has no LeftToeBase / LeftFoot")
+    raise KeyError("BVH frame has no LeftFoot / LeftAnkle")
 
 
 def _bvh_head(human_data: dict) -> np.ndarray:
@@ -143,17 +146,17 @@ def _bvh_head(human_data: dict) -> np.ndarray:
 
 
 def scale_mesh_to_skeleton_head(driver: MixamoToSMPLX, human_data: dict) -> tuple[float, float, float]:
-    """Uniform scale so the posed mesh crown hits BVH Head after toe-pin.
+    """Uniform scale so the posed mesh crown hits BVH Head after ankle-pin.
 
-    Height is Head_z − LeftToeBase_z on the skeleton, and mesh-crown_z −
-    SMPL-X left-foot_z on the mesh. ``betas`` are left unchanged.
+    Height is Head_z − LeftFoot_z on the skeleton, and mesh-crown_z −
+    SMPL-X left-ankle_z on the mesh. ``betas`` are left unchanged.
     """
     driver.set_scale(1.0, 1.0)
     verts, joints = driver.drive(human_data)
-    target_h = float(_bvh_head(human_data)[2] - _bvh_left_toe(human_data)[2])
-    posed_h = float(verts[:, 2].max() - joints[SMPLX_JOINT_LEFT_FOOT][2])
+    target_h = float(_bvh_head(human_data)[2] - _bvh_left_foot(human_data)[2])
+    posed_h = float(verts[:, 2].max() - joints[SMPLX_JOINT_LEFT_ANKLE][2])
     if posed_h <= 1e-6:
-        raise RuntimeError("SMPL-X posed crown-to-toe height is degenerate")
+        raise RuntimeError("SMPL-X posed crown-to-ankle height is degenerate")
     scale = target_h / posed_h
     driver.set_scale(scale, scale)
     return scale, target_h, posed_h
@@ -470,6 +473,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--no-skeleton", action="store_true",
                    help="Do not overlay the Mixamo/BVH skeleton")
     p.add_argument("--no-y-up", action="store_true")
+    p.add_argument("--no-fit-bones", action="store_true",
+                   help="Do not stretch SMPL-X bones to Mixamo lengths")
     return p.parse_args()
 
 
@@ -532,13 +537,31 @@ def main() -> int:
 
     print("[2/4] Loading SMPL-X and object tracks …")
     driver = MixamoToSMPLX(smplx_model, gender=gender, ext="pkl")
+    if not args.no_fit_bones:
+        fit = driver.fit_bone_scales(human_frames[0])
+        print(
+            f"  bone-fit ({fit['mode']}) from frame 0  "
+            f"leg×{fit['leg']:.3f}  torso×{fit['torso']:.3f}  arm×{fit['arm']:.3f}"
+        )
+        for j, name in enumerate(
+            ("Hips", "LUpLeg", "RUpLeg", "Spine", "LLeg", "RLeg", "Spine1",
+             "LFoot", "RFoot", "Spine2", "LToe", "RToe", "Neck",
+             "LShoulder", "RShoulder", "Head", "LArm", "RArm",
+             "LForeArm", "RForeArm", "LHand", "RHand")
+        ):
+            if j == 0:
+                continue
+            print(
+                f"    {name:10s}  ×{fit['scale'][j]:.3f}  "
+                f"mixamo={fit['mixamo_len'][j]:.3f}m  smplx={fit['smplx_len'][j]:.3f}m"
+            )
     rest_h = driver.rest_height()
     align_to_head = args.human_height == "bvh"
     if align_to_head:
         scale, target_h, posed_h = scale_mesh_to_skeleton_head(driver, human_frames[0])
         print(f"  model gender={driver.gender}  rest_height={rest_h:.3f}m")
         print(f"  scale={scale:.4f}  so mesh crown matches Head "
-              f"(Head−toe={target_h:.3f}m / posed crown−toe={posed_h:.3f}m)")
+              f"(Head−ankle={target_h:.3f}m / posed crown−ankle={posed_h:.3f}m)")
     elif rest_h > 1e-6:
         scale = use_height / rest_h
         driver.set_scale(scale, scale)
@@ -546,6 +569,19 @@ def main() -> int:
               f"uniform scale={scale:.4f}  (T-pose AABB → {height_label})")
     else:
         print(f"  model gender={driver.gender}  (could not measure rest height)")
+
+    if LEG_EXTRA_THIGH_M or LEG_EXTRA_SHIN_M:
+        driver.lengthen_leg_segments(
+            human_frames[0],
+            thigh_m=LEG_EXTRA_THIGH_M,
+            shin_m=LEG_EXTRA_SHIN_M,
+        )
+        print(
+            f"  leg extra  thigh+{LEG_EXTRA_THIGH_M * 100:.0f}cm  "
+            f"shin+{LEG_EXTRA_SHIN_M * 100:.0f}cm  "
+            f"(after height scale, world metres)",
+            flush=True,
+        )
 
     for obj in objects:
         obj.mesh_scale_xyz = np.full(3, MESH_SCALE, dtype=np.float64)
@@ -561,35 +597,34 @@ def main() -> int:
     print("[3/4] Skinning SMPL-X …")
     first_verts, first_joints = driver.drive(human_frames[0])
     world_verts = np.empty((len(human_frames), first_verts.shape[0], 3), dtype=np.float32)
-    smplx_toe = np.zeros((len(human_frames), 3), dtype=np.float64)
-    bvh_toe = np.zeros((len(human_frames), 3), dtype=np.float64)
+    smplx_foot = np.zeros((len(human_frames), 3), dtype=np.float64)
+    bvh_foot = np.zeros((len(human_frames), 3), dtype=np.float64)
     lookat = np.zeros((len(human_frames), 3), dtype=np.float64)
     world_verts[0] = first_verts
-    smplx_toe[0] = first_joints[SMPLX_JOINT_LEFT_FOOT]
-    bvh_toe[0] = _bvh_left_toe(human_frames[0])
+    smplx_foot[0] = first_joints[SMPLX_JOINT_LEFT_ANKLE]
+    bvh_foot[0] = _bvh_left_foot(human_frames[0])
     lookat[0] = np.asarray(human_frames[0]["Hips"][0], dtype=np.float64)
     for i in tqdm(range(1, len(human_frames)), desc="smplx", unit="frame"):
         verts_i, joints_i = driver.drive(human_frames[i])
         world_verts[i] = verts_i
-        smplx_toe[i] = joints_i[SMPLX_JOINT_LEFT_FOOT]
-        bvh_toe[i] = _bvh_left_toe(human_frames[i])
+        smplx_foot[i] = joints_i[SMPLX_JOINT_LEFT_ANKLE]
+        bvh_foot[i] = _bvh_left_foot(human_frames[i])
         lookat[i] = np.asarray(human_frames[i]["Hips"][0], dtype=np.float64)
 
-    # Pin SMPL-X LeftFoot to Mixamo LeftToeBase, then store toe-local verts.
-    # The mocap body carries LeftToeBase so hip jitter does not slide the mesh.
-    offset = bvh_toe - smplx_toe
+    # Pin SMPL-X LeftFoot (ankle) to Mixamo LeftFoot, then store ankle-local verts.
+    offset = bvh_foot - smplx_foot
     lookat = lookat + offset
-    local_verts = np.ascontiguousarray(world_verts - smplx_toe[:, None, :], dtype=np.float32)
+    local_verts = np.ascontiguousarray(world_verts - smplx_foot[:, None, :], dtype=np.float32)
     print(
-        f"  bvh_toe0={np.round(bvh_toe[0], 3).tolist()}  "
-        f"smplx_toe0={np.round(smplx_toe[0], 3).tolist()}  "
+        f"  bvh_foot0={np.round(bvh_foot[0], 3).tolist()}  "
+        f"smplx_foot0={np.round(smplx_foot[0], 3).tolist()}  "
         f"offset0={np.round(offset[0], 3).tolist()}",
         flush=True,
     )
     print(
         f"  local z=[{local_verts[0, :, 2].min():.3f}, {local_verts[0, :, 2].max():.3f}]  "
-        f"aligned world z=[{(local_verts[0, :, 2] + bvh_toe[0, 2]).min():.3f}, "
-        f"{(local_verts[0, :, 2] + bvh_toe[0, 2]).max():.3f}]",
+        f"aligned world z=[{(local_verts[0, :, 2] + bvh_foot[0, 2]).min():.3f}, "
+        f"{(local_verts[0, :, 2] + bvh_foot[0, 2]).max():.3f}]",
         flush=True,
     )
 
@@ -623,7 +658,7 @@ def main() -> int:
             model=model,
             verts=local_verts,
             objects=objects,
-            anchor=bvh_toe,
+            anchor=bvh_foot,
             lookat=lookat,
             skel_pos=None if args.no_skeleton else skel_pos,
             skel_edges=skel_edges,
