@@ -11,10 +11,14 @@ are metres / Y-up / xyzw. Poses are remapped with the same ``zxy`` axis order as
 ``BVHParser`` — ``(x, y, z) → (z, x, y)`` — so the object shares the robot frame.
 Do **not** use vis_mesh's Rx(+90°) here; that convention does not match the BVH.
 
-Object position and mesh size then use the same Hips horizontal/vertical
-factors as ``GMR.scale_human_data`` (including the human-height ratio):
-world XY × ``sh``, world Z × ``sv``. Mesh local Y (authored up) maps to
-world Z after ``zxy``, so local scale is ``(sh, sv, sh)`` times centimetres→metres.
+Object position and mesh size follow the BVH Hips scale actually used by
+GMR: ``(actual_human_height / human_height_assumption) ×`` the IK JSON
+``Hips`` horizontal / vertical table. World XY × ``sh``, world Z × ``sv``.
+Mesh local Y (authored up) maps to world Z after ``zxy``, so local scale is
+``(sh, sv, sh)`` times centimetres→metres.
+
+The SMPL-X overlay is driven from the BVH *before* GMR scale/offset so it
+matches the original human, not the IK-aligned skeleton.
 
 Examples::
 
@@ -23,6 +27,7 @@ Examples::
     python scripts/hiphi_to_robot.py --clip Change_posture-sit_down_0002
     python scripts/hiphi_to_robot.py --clip Change_posture-sit_down_0002__mirror
     python scripts/hiphi_to_robot.py --object-category chair --max-frames 300
+    python scripts/hiphi_to_robot.py --clip Posture-sit_0004 --no-smplx
 """
 
 from __future__ import annotations
@@ -54,12 +59,26 @@ import mujoco.viewer as mjv
 
 from retargeting_visualizer.visualize_retargeting import load_bvh_all_frames
 
+from general_motion_retargeting.utils.smplx_from_mixamo import (
+    SMPLX_JOINT_LEFT_ANKLE,
+    SMPLX_JOINT_RIGHT_ANKLE,
+    MixamoToSMPLX,
+    write_obj,
+)
+
 DEFAULT_HIPHI_ROOT = _PROJECT_ROOT / "datas" / "hiphi"
 DEFAULT_MESH_DIR = DEFAULT_HIPHI_ROOT / "object_meshes"
 DEFAULT_IK = _PROJECT_ROOT / "general_motion_retargeting" / "ik_configs" / "hiphi.json"
 DEFAULT_XML = _PROJECT_ROOT / "assets" / "D20_29dof" / "mjcf" / "D20.xml"
+DEFAULT_SMPLX = _PROJECT_ROOT / "assets" / "smpl-x"
 DEFAULT_CLIP = "Posture-sit_0015"
 MESH_SCALE = 0.01  # OBJ centimetres → metres
+# Same extras as scripts/bvh_to_smplx_viewer.py (world metres after height scale).
+LEG_EXTRA_THIGH_M = 0.04
+LEG_EXTRA_SHIN_M = 0.03
+_LEFT_FOOT_NAMES = ("LeftFoot", "LeftAnkle")
+_RIGHT_FOOT_NAMES = ("RightFoot", "RightAnkle")
+_HEAD_NAMES = ("Head", "Neck")
 # Same remap as BVHParser(axis_order="zxy"): Mixamo/HiPHI (x, y, z) → (z, x, y).
 # vis_mesh.py uses Rx(+90°) for a static gallery; that does NOT match retargeted BVH.
 _AXIS_IDX = (2, 0, 1)
@@ -111,6 +130,15 @@ class HiphiClip:
     meta_path: Path
     meta: dict
     objects: list[HiphiObject]
+
+
+@dataclass
+class SmplxOverlay:
+    verts: np.ndarray
+    anchor: np.ndarray
+    obj_path: Path
+    mesh_id: int = -1
+    mocap_id: int = -1
 
 
 # ---------------------------------------------------------------------------
@@ -293,16 +321,21 @@ def hiphi_pose_to_mujoco(pos_yup: np.ndarray, quat_xyzw: np.ndarray) -> tuple[np
     return pos_out, quat_wxyz
 
 
-def hips_object_scales(retargeter) -> tuple[float, float]:
-    """Hips horizontal / vertical factors actually used on the BVH human."""
-    root = retargeter.human_root_name
-    sh = float(retargeter.human_scale_table_horizontal[root])
-    sv = float(retargeter.human_scale_table_vertical[root])
-    return sh, sv
+def hips_object_scales(ik_config: dict, actual_human_height: float) -> tuple[float, float]:
+    """BVH Hips scale: ``(actual_human_height / assumed) * JSON Hips v/h``."""
+    assumed = float(ik_config.get("human_height_assumption", 1.8))
+    ratio = float(actual_human_height) / assumed if assumed > 1e-8 else 1.0
+    root = str(ik_config.get("human_root_name") or "Hips")
+    if "human_scale_table_horizontal" in ik_config:
+        sh = float(ik_config["human_scale_table_horizontal"][root]) * ratio
+        sv = float(ik_config["human_scale_table_vertical"][root]) * ratio
+        return sh, sv
+    scale = float(ik_config["human_scale_table"][root]) * ratio
+    return scale, scale
 
 
 def scale_objects_like_hips(objects: list[HiphiObject], sh: float, sv: float) -> None:
-    """Match GMR Hips world scaling: ``pos * [sh, sh, sv]``, size accordingly.
+    """Match the scaled BVH Hips: ``pos * [sh, sh, sv]``, size accordingly.
 
     After zxy, mesh local Y is world up, so local mesh scale is (sh, sv, sh)
     on top of centimetres→metres.
@@ -376,8 +409,92 @@ def _rgba_str(rgba: tuple[float, float, float, float]) -> str:
     return " ".join(f"{c:.4f}" for c in rgba)
 
 
+def _bvh_named_pos(human_data: dict, names: tuple[str, ...]) -> np.ndarray:
+    for name in names:
+        pose = human_data.get(name)
+        if pose is not None:
+            return np.asarray(pose[0], dtype=np.float64)
+    raise KeyError(f"frame has none of {names}")
+
+
+def scale_mesh_to_skeleton_head(driver: MixamoToSMPLX, human_data: dict) -> tuple[float, float, float]:
+    """Uniform scale so the posed mesh crown hits the skeleton Head after ankle-pin."""
+    driver.set_scale(1.0, 1.0)
+    verts, joints = driver.drive(human_data)
+    target_h = float(_bvh_named_pos(human_data, _HEAD_NAMES)[2]
+                     - _bvh_named_pos(human_data, _LEFT_FOOT_NAMES)[2])
+    posed_h = float(verts[:, 2].max() - joints[SMPLX_JOINT_LEFT_ANKLE][2])
+    if posed_h <= 1e-6:
+        raise RuntimeError("SMPL-X posed crown-to-ankle height is degenerate")
+    scale = target_h / posed_h
+    driver.set_scale(scale, scale)
+    return scale, target_h, posed_h
+
+
+def skin_processed_smplx(
+    human_frames: list[dict],
+    smplx_model: Path,
+    gender: str,
+) -> tuple[np.ndarray, np.ndarray, MixamoToSMPLX]:
+    """Drive the Mixamo→SMPL-X pipeline used by ``bvh_to_smplx_viewer``.
+
+    ``human_frames`` must be the BVH *before* GMR scale/offset. Those IK
+    alignments exist to match robot joints and should not move the mesh.
+    """
+    driver = MixamoToSMPLX(smplx_model, gender=gender, ext="pkl")
+    fit = driver.fit_bone_scales(human_frames[0])
+    print(
+        f"  SMPL-X bone-fit ({fit['mode']})  "
+        f"leg×{fit['leg']:.3f}  torso×{fit['torso']:.3f}  arm×{fit['arm']:.3f}"
+    )
+    scale, target_h, posed_h = scale_mesh_to_skeleton_head(driver, human_frames[0])
+    print(
+        f"  SMPL-X gender={driver.gender}  scale={scale:.4f}  "
+        f"(Head−ankle={target_h:.3f}m / posed crown−ankle={posed_h:.3f}m)"
+    )
+    if LEG_EXTRA_THIGH_M or LEG_EXTRA_SHIN_M:
+        driver.lengthen_leg_segments(
+            human_frames[0],
+            thigh_m=LEG_EXTRA_THIGH_M,
+            shin_m=LEG_EXTRA_SHIN_M,
+        )
+        print(
+            f"  SMPL-X leg extra  thigh+{LEG_EXTRA_THIGH_M * 100:.0f}cm  "
+            f"shin+{LEG_EXTRA_SHIN_M * 100:.0f}cm"
+        )
+
+    n = len(human_frames)
+    first_verts, first_joints = driver.drive(human_frames[0])
+    world_verts = np.empty((n, first_verts.shape[0], 3), dtype=np.float32)
+    smplx_lfoot = np.zeros((n, 3), dtype=np.float64)
+    smplx_rfoot = np.zeros((n, 3), dtype=np.float64)
+    bvh_lfoot = np.zeros((n, 3), dtype=np.float64)
+    bvh_rfoot = np.zeros((n, 3), dtype=np.float64)
+    world_verts[0] = first_verts
+    smplx_lfoot[0] = first_joints[SMPLX_JOINT_LEFT_ANKLE]
+    smplx_rfoot[0] = first_joints[SMPLX_JOINT_RIGHT_ANKLE]
+    bvh_lfoot[0] = _bvh_named_pos(human_frames[0], _LEFT_FOOT_NAMES)
+    bvh_rfoot[0] = _bvh_named_pos(human_frames[0], _RIGHT_FOOT_NAMES)
+    for i in tqdm(range(1, n), desc="smplx", unit="frame"):
+        verts_i, joints_i = driver.drive(human_frames[i])
+        world_verts[i] = verts_i
+        smplx_lfoot[i] = joints_i[SMPLX_JOINT_LEFT_ANKLE]
+        smplx_rfoot[i] = joints_i[SMPLX_JOINT_RIGHT_ANKLE]
+        bvh_lfoot[i] = _bvh_named_pos(human_frames[i], _LEFT_FOOT_NAMES)
+        bvh_rfoot[i] = _bvh_named_pos(human_frames[i], _RIGHT_FOOT_NAMES)
+
+    smplx_mid = 0.5 * (smplx_lfoot + smplx_rfoot)
+    bvh_mid = 0.5 * (bvh_lfoot + bvh_rfoot)
+    origin = np.column_stack([smplx_mid[:, 0], smplx_mid[:, 1], smplx_lfoot[:, 2]])
+    target = np.column_stack([bvh_mid[:, 0], bvh_mid[:, 1], bvh_lfoot[:, 2]])
+    local_verts = np.ascontiguousarray(world_verts - origin[:, None, :], dtype=np.float32)
+    print(f"  SMPL-X pin XY=ankle-midpoint  Z=LeftFoot  "
+          f"offset0={np.round((target - origin)[0], 3).tolist()}")
+    return local_verts, target, driver
+
+
 # ---------------------------------------------------------------------------
-#  Combined MuJoCo scene: robot XML + mocap object meshes
+#  Combined MuJoCo scene: robot XML + mocap object meshes + SMPL-X
 # ---------------------------------------------------------------------------
 
 def build_scene_xml(
@@ -401,7 +518,10 @@ def build_scene_xml(
     if world is None:
         world = ET.SubElement(root, "worldbody")
 
-    used_names: set[str] = set()
+    used_names = {name for el in root.iter() if (name := el.get("name"))}
+    if smplx_obj is not None:
+        used_names.update({"smplx_mesh", "smplx_human", "smplx_human_geom"})
+
     for obj in objects:
         body_name = _unique_name(f"obj_{obj.object_id}", used_names)
         mesh_name = _unique_name(f"mesh_{obj.mesh_id}", used_names)
@@ -411,8 +531,13 @@ def build_scene_xml(
             name=mesh_name,
             file=str(obj.mesh_path.resolve()),
             scale=f"{sx} {sy} {sz}",
+            maxhullvert="32",
         )
         body = ET.SubElement(world, "body", name=body_name, mocap="true")
+        ET.SubElement(
+            body, "inertial",
+            pos="0 0 0", mass="1", diaginertia="1 1 1",
+        )
         ET.SubElement(
             body, "geom",
             name=f"{body_name}_geom",
@@ -421,27 +546,33 @@ def build_scene_xml(
             rgba=_rgba_str(rgba_of(obj)),
             contype="0",
             conaffinity="0",
+            condim="1",
             group="1",
         )
         obj._body_name = body_name  # type: ignore[attr-defined]
 
     if smplx_obj is not None:
-        mesh_name = _unique_name("smplx_mesh", used_names)
         ET.SubElement(
             asset, "mesh",
-            name=mesh_name,
+            name="smplx_mesh",
             file=str(Path(smplx_obj).resolve()),
             scale="1 1 1",
+            maxhullvert="32",
         )
-        body = ET.SubElement(world, "body", name="smplx_human")
+        body = ET.SubElement(world, "body", name="smplx_human", mocap="true")
+        ET.SubElement(
+            body, "inertial",
+            pos="0 0 0", mass="1", diaginertia="1 1 1",
+        )
         ET.SubElement(
             body, "geom",
             name="smplx_human_geom",
             type="mesh",
-            mesh=mesh_name,
-            rgba="0.92 0.72 0.58 0.55",
+            mesh="smplx_mesh",
+            rgba="0.92 0.72 0.58 0.45",
             contype="0",
             conaffinity="0",
+            condim="1",
             group="2",
         )
 
@@ -483,6 +614,39 @@ def bind_mocap_ids(model: mj.MjModel, objects: list[HiphiObject]) -> None:
         if mid < 0:
             raise RuntimeError(f"body {body_name!r} is not mocap")
         obj.mocap_id = mid
+
+
+def bind_smplx_overlay(model: mj.MjModel, overlay: SmplxOverlay) -> None:
+    mesh_id = mj.mj_name2id(model, mj.mjtObj.mjOBJ_MESH, "smplx_mesh")
+    if mesh_id < 0:
+        raise RuntimeError("compiled scene is missing smplx_mesh")
+    body_id = mj.mj_name2id(model, mj.mjtObj.mjOBJ_BODY, "smplx_human")
+    if body_id < 0:
+        raise RuntimeError("compiled scene is missing smplx_human")
+    mocap_id = int(model.body_mocapid[body_id])
+    if mocap_id < 0:
+        raise RuntimeError("smplx_human is not a mocap body")
+    overlay.mesh_id = int(mesh_id)
+    overlay.mocap_id = mocap_id
+    _pin_visual_mesh_frame(model, "smplx_human_geom", overlay.verts[0])
+
+
+def _pin_visual_mesh_frame(model: mj.MjModel, geom_name: str, verts: np.ndarray) -> None:
+    """Undo MuJoCo's compile-time mesh inertia frame on a visual-only geom."""
+    gid = mj.mj_name2id(model, mj.mjtObj.mjOBJ_GEOM, geom_name)
+    if gid < 0:
+        raise RuntimeError(f"geom {geom_name!r} missing")
+    mid = int(model.geom_dataid[gid])
+    if mid < 0:
+        raise RuntimeError(f"geom {geom_name!r} is not a mesh")
+    model.geom_pos[gid] = 0.0
+    model.geom_quat[gid] = np.array([1.0, 0.0, 0.0, 0.0])
+    adr = int(model.mesh_vertadr[mid])
+    nvert = int(model.mesh_vertnum[mid])
+    verts = np.asarray(verts, dtype=model.mesh_vert.dtype)
+    if verts.shape[0] != nvert:
+        raise ValueError(f"SMPL-X vert count {verts.shape[0]} != mesh {nvert}")
+    model.mesh_vert[adr:adr + nvert] = verts
 
 
 # ---------------------------------------------------------------------------
@@ -555,12 +719,7 @@ def _upload_mesh_verts(viewer, model: mj.MjModel, mesh_id: int, verts: np.ndarra
     if verts.shape[0] != nvert:
         raise ValueError(f"SMPL-X vert count {verts.shape[0]} != mesh {nvert}")
     model.mesh_vert[adr:adr + nvert] = np.asarray(verts, dtype=model.mesh_vert.dtype)
-    sim = viewer._sim() if hasattr(viewer, "_sim") else None
-    con = None
-    if sim is not None:
-        con = getattr(sim, "con", None) or getattr(sim, "_con", None)
-    if con is not None:
-        mj.mjr_uploadMesh(model, con, int(mesh_id))
+    viewer.update_mesh(int(mesh_id))
 
 
 def launch_viewer(
@@ -572,6 +731,7 @@ def launch_viewer(
     show_human: bool,
     follow_camera: bool,
     title: str,
+    smplx: SmplxOverlay | None = None,
 ) -> None:
     data = mj.MjData(model)
     n_frames = int(qpos.shape[0])
@@ -588,11 +748,12 @@ def launch_viewer(
     except Exception:
         base_id = -1
 
+    ident_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
     state = {
         "current": 0,
         "playing": True,
         "speed": 1.0,
-        "last_switch": time.time(),
+        "smplx": smplx is not None,
     }
 
     def key_callback(keycode: int) -> None:
@@ -622,15 +783,23 @@ def launch_viewer(
             state["speed"] = 4.0
         elif keycode in (82, 114):  # R / r
             state["current"] = 0
+        elif keycode in (77, 109) and smplx is not None:  # M / m
+            state["smplx"] = not state["smplx"]
+            print(f"  SMPL-X mesh {'on' if state['smplx'] else 'off'}")
+            return
         else:
             return
         print(f"  frame {state['current'] + 1}/{n_frames}  "
               f"{'play' if state['playing'] else 'pause'}  x{state['speed']:g}")
 
     print(f"\n{title}")
-    print("  Controls: ← → frame   ↑ ↓ ±10   Space play/pause   1-5 speed   R restart   Esc close")
+    print("  Controls: ← → frame   ↑ ↓ ±10   Space play/pause   1-5 speed   "
+          "M SMPL-X   R restart   Esc close")
     obj_names = ", ".join(f"{o.object_id}({o.category})" for o in objects) or "(none)"
     print(f"  Objects: {obj_names}")
+    if smplx is not None:
+        print(f"  SMPL-X overlay: {smplx.verts.shape[0]} frames, "
+              f"{smplx.verts.shape[1]} verts  (M toggles)")
 
     with mjv.launch_passive(
         model, data,
@@ -658,16 +827,24 @@ def launch_viewer(
                 last_time = now
 
             fi = state["current"]
+            viewer.opt.geomgroup[2] = 1 if state["smplx"] else 0
             if fi != prev:
                 prev = fi
-                data.qpos[:] = qpos[fi]
-                mj.mj_forward(model, data)
-                for obj in objects:
-                    if obj.mocap_id < 0 or fi >= len(obj.pos_zup):
-                        continue
-                    data.mocap_pos[obj.mocap_id] = obj.pos_zup[fi]
-                    data.mocap_quat[obj.mocap_id] = obj.quat_wxyz[fi]
-                mj.mj_forward(model, data)
+                # update_mesh() takes the simulate lock internally. Calling it
+                # inside viewer.lock() deadlocks the UI on the first frame.
+                if smplx is not None and fi < len(smplx.verts):
+                    _upload_mesh_verts(viewer, model, smplx.mesh_id, smplx.verts[fi])
+                with viewer.lock():
+                    data.qpos[:] = qpos[fi]
+                    for obj in objects:
+                        if obj.mocap_id < 0 or fi >= len(obj.pos_zup):
+                            continue
+                        data.mocap_pos[obj.mocap_id] = obj.pos_zup[fi]
+                        data.mocap_quat[obj.mocap_id] = obj.quat_wxyz[fi]
+                    if smplx is not None and fi < len(smplx.anchor):
+                        data.mocap_pos[smplx.mocap_id] = smplx.anchor[fi]
+                        data.mocap_quat[smplx.mocap_id] = ident_quat
+                    mj.mj_forward(model, data)
 
                 if show_human and fi < len(human_scaled):
                     _draw_human_overlay(viewer, human_scaled[fi])
@@ -695,7 +872,7 @@ def _parse_height(value: str):
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Retarget HiPHI motion with ik_configs and view robot + objects in MuJoCo.",
+        description="Retarget HiPHI motion and view robot + processed SMPL-X + objects in MuJoCo.",
     )
     p.add_argument("--hiphi-root", type=Path, default=DEFAULT_HIPHI_ROOT,
                    help="Root of HiPHI data (default: datas/hiphi)")
@@ -704,7 +881,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--bvh", type=Path, default=None,
                    help="Direct path to motion_actor.bvh (overrides --clip)")
     p.add_argument("--ik-config", type=Path, default=DEFAULT_IK,
-                   help="IK JSON (default: ik_configs/hiphi.json)")
+                   help="IK JSON (default: ik_configs/hiphi_sit.json)")
     p.add_argument("--xml", type=Path, default=DEFAULT_XML,
                    help="Robot MJCF (default: assets/D20_29dof/mjcf/D20.xml)")
     p.add_argument("--object-category", type=str, default=None,
@@ -722,6 +899,13 @@ def parse_args() -> argparse.Namespace:
                    help="Do not apply BVHParser zxy axis remap to object tracks")
     p.add_argument("--show-human", action="store_true",
                    help="Overlay scaled human joint spheres")
+    p.add_argument("--smplx-model", type=Path, default=DEFAULT_SMPLX,
+                   help="SMPL-X folder or SMPLX_*.pkl (default: assets/smpl-x)")
+    p.add_argument("--gender", type=str, default="auto",
+                   choices=("auto", "neutral", "female", "male"),
+                   help="SMPL-X gender. auto uses clip metadata, then Neutral.")
+    p.add_argument("--no-smplx", action="store_true",
+                   help="Do not overlay the processed SMPL-X mesh")
     p.add_argument("--no-follow-camera", action="store_true",
                    help="Do not keep the camera on the robot base")
     p.add_argument("--no-viewer", action="store_true",
@@ -758,6 +942,13 @@ def main() -> int:
 
     clip = resolve_clip(clips, args.clip, args.bvh, args.object_category, hiphi_root)
     objects = filter_objects(clip.objects, args.object_category)
+    smplx_model = args.smplx_model.resolve()
+    gender = args.gender
+    if gender == "auto":
+        gender = str((clip.meta.get("actor_metadata") or {}).get("gender") or "neutral")
+    if not args.no_smplx and not args.no_viewer and not smplx_model.exists():
+        print(f"ERROR: SMPL-X model not found: {smplx_model}")
+        return 1
 
     with open(ik_path) as fh:
         ik_config = json.load(fh)
@@ -769,6 +960,10 @@ def main() -> int:
     print(f"  text     : {clip.meta.get('text_annotation', '')}")
     print(f"IK config  : {ik_path}")
     print(f"Robot XML  : {xml_path}")
+    if args.no_smplx:
+        print("SMPL-X     : (off)")
+    else:
+        print(f"SMPL-X     : {smplx_model}  gender={gender}")
     obj_desc = ", ".join(
         f"{o.object_id} mesh={o.mesh_path.name} ({o.category}) track={o.track_path.name}"
         for o in objects
@@ -818,9 +1013,12 @@ def main() -> int:
         ik_config_path=str(ik_path),
         verbose=False,
     )
-    sh, sv = hips_object_scales(retargeter)
+    sh, sv = hips_object_scales(ik_config, use_height)
     scale_objects_like_hips(objects, sh, sv)
-    print(f"  object scale from Hips: horizontal={sh:.4f}  vertical={sv:.4f}")
+    assumed = float(ik_config.get("human_height_assumption", 1.8))
+    ratio = use_height / assumed if assumed > 1e-8 else 1.0
+    print(f"  object scale = height_ratio {ratio:.4f} × JSON Hips  "
+          f"horizontal={sh:.4f}  vertical={sv:.4f}")
     print(f"  mesh local scale (cm→m × Hips): "
           f"{MESH_SCALE * sh:.5f} {MESH_SCALE * sv:.5f} {MESH_SCALE * sh:.5f}")
     for obj in objects:
@@ -828,6 +1026,21 @@ def main() -> int:
 
     qpos, human_scaled = retarget_frames(retargeter, human_frames)
     print(f"  qpos {qpos.shape}")
+
+    overlay: SmplxOverlay | None = None
+    tmp_obj_path: Path | None = None
+    if not args.no_viewer and not args.no_smplx:
+        print("[3b/4] Skinning SMPL-X overlay from pre-GMR BVH …")
+        local_verts, anchor, driver = skin_processed_smplx(
+            human_frames, smplx_model, gender,
+        )
+        tmp_obj = tempfile.NamedTemporaryFile(
+            prefix="smplx_rest_", suffix=".obj", delete=False,
+        )
+        tmp_obj_path = Path(tmp_obj.name)
+        tmp_obj.close()
+        write_obj(tmp_obj_path, local_verts[0], driver.faces)
+        overlay = SmplxOverlay(verts=local_verts, anchor=anchor, obj_path=tmp_obj_path)
 
     if args.save_pkl is not None:
         import pickle
@@ -862,10 +1075,15 @@ def main() -> int:
         return 0
 
     print("[4/4] Opening MuJoCo viewer …")
-    xml_str = build_scene_xml(xml_path, objects)
+    xml_str = build_scene_xml(
+        xml_path, objects,
+        smplx_obj=overlay.obj_path if overlay is not None else None,
+    )
     model, tmp_xml = compile_scene(xml_str)
     try:
         bind_mocap_ids(model, objects)
+        if overlay is not None:
+            bind_smplx_overlay(model, overlay)
         launch_viewer(
             model=model,
             qpos=qpos,
@@ -875,9 +1093,12 @@ def main() -> int:
             show_human=args.show_human,
             follow_camera=not args.no_follow_camera,
             title=f"{clip.motion_id} → {xml_path.parent.name}  [{ik_path.name}]",
+            smplx=overlay,
         )
     finally:
         tmp_xml.unlink(missing_ok=True)
+        if tmp_obj_path is not None:
+            tmp_obj_path.unlink(missing_ok=True)
     return 0
 
 

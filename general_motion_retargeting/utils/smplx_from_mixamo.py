@@ -97,6 +97,19 @@ def _from_to_rotation(src: np.ndarray, dst: np.ndarray) -> R:
     return R.from_rotvec((v / s) * np.arctan2(s, c))
 
 
+def _from_to_sagittal(src: np.ndarray, dst: np.ndarray) -> R:
+    """FromTo onto ``dst``, keeping the rest coronal (abduction) offset.
+
+    Y-up: abduction is rotation about +Z. Neutral SMPL-X thighs already sit
+    ~8° out (A-stance, knees wider than hips). Full FromTo to Mixamo −Y
+    adducts them; pinning ankles to the wider Mixamo feet then looks X-legged.
+    """
+    rv = _from_to_rotation(src, dst).as_rotvec()
+    rv[1] = 0.0
+    rv[2] = 0.0
+    return R.from_rotvec(rv)
+
+
 def _as_numpy(x) -> np.ndarray:
     if hasattr(x, "detach"):
         x = x.detach().cpu().numpy()
@@ -238,9 +251,10 @@ class MixamoToSMPLX:
         """Align SMPL-X rest limb bones to Mixamo bind axes.
 
         Neutral rest is not a strict T: humeri sit ~9–18° off ±X, thighs and
-        shins ~4–8° off −Y. Each correction is applied on the parent joint
-        that aims that bone; the child local is conjugated so world pose of
-        the rest of the chain stays Mixamo's.
+        shins ~4–8° off −Y. Arms use full FromTo. Legs keep only the sagittal
+        (flexion) part so Neutral's A-stance is not adducted into X-legs.
+        Each correction is applied on the parent that aims that bone; the
+        child local is conjugated so the rest of the chain stays Mixamo's.
         """
         torch = self._torch
         with torch.no_grad():
@@ -250,12 +264,12 @@ class MixamoToSMPLX:
             _from_to_rotation(rest[19] - rest[17], _MIXAMO_BIND_HUMERUS[1]),
         )
         thigh = (
-            _from_to_rotation(rest[4] - rest[1], _MIXAMO_BIND_LEG),
-            _from_to_rotation(rest[5] - rest[2], _MIXAMO_BIND_LEG),
+            _from_to_sagittal(rest[4] - rest[1], _MIXAMO_BIND_LEG),
+            _from_to_sagittal(rest[5] - rest[2], _MIXAMO_BIND_LEG),
         )
         shin = (
-            _from_to_rotation(rest[7] - rest[4], _MIXAMO_BIND_LEG),
-            _from_to_rotation(rest[8] - rest[5], _MIXAMO_BIND_LEG),
+            _from_to_sagittal(rest[7] - rest[4], _MIXAMO_BIND_LEG),
+            _from_to_sagittal(rest[8] - rest[5], _MIXAMO_BIND_LEG),
         )
         return arm, thigh, shin
 

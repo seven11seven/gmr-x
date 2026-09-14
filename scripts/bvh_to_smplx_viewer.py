@@ -65,7 +65,7 @@ _RIGHT_FOOT_NAMES = ("RightFoot", "RightAnkle")
 _FINGER_MARKERS = ("HandIndex", "HandMiddle", "HandRing", "HandPinky", "HandThumb")
 # Extra world length on top of Mixamo bone-fit (thigh = hip→knee, shin = knee→ankle).
 LEG_EXTRA_THIGH_M = 0.04
-LEG_EXTRA_SHIN_M = 0.04
+LEG_EXTRA_SHIN_M = 0.03
 
 
 def _is_body_joint(name: str) -> bool:

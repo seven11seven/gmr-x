@@ -1,0 +1,15 @@
+{
+  "source_name": "smplx_neutral",
+  "robot_name": "d20",
+  "num_slots": 4096,
+  "mean_source_bind_error": 1.1483044737303771e-08,
+  "mean_robot_bind_error": 0.039673976600170135,
+  "mean_correspondence_error": 0.1846466213464737,
+  "fields": {
+    "slot_index": "Shared AE slot. The same i is one SMPL-X/robot pair.",
+    "source_points / robot_points": "Paired surface points in each template root frame.",
+    "source_face_ids, source_bary, source_vertex_ids": "Bind onto the SMPL-X rest mesh; skin with LBS.",
+    "robot_face_ids, robot_bary, robot_geom_ids, robot_body_ids": "Bind onto the robot rest mesh; FK the geom.",
+    "correspondence_error": "L2 of the robot residual slot (match quality)."
+  }
+}
