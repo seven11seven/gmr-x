@@ -22,7 +22,9 @@ _P = np.array(
 _P_ROT = R.from_matrix(_P)
 
 # SMPL-X body joint indices we expose after the Y-up → MuJoCo remap.
+SMPLX_JOINT_PELVIS = 0
 SMPLX_JOINT_LEFT_ANKLE = 7   # maps to Mixamo LeftFoot
+SMPLX_JOINT_RIGHT_ANKLE = 8  # maps to Mixamo RightFoot
 SMPLX_JOINT_LEFT_FOOT = 10   # maps to Mixamo LeftToeBase
 _THIGH_BONES = (4, 5)        # hip → knee (LeftLeg / RightLeg)
 _SHIN_BONES = (7, 8)         # knee → ankle (LeftFoot / RightFoot)
@@ -433,7 +435,7 @@ class MixamoToSMPLX:
         """Return (verts, joints) in the BVHParser / MuJoCo frame.
 
         Joints are the first 22 SMPL-X body joints. Pelvis is placed on Mixamo
-        Hips; callers may then translate so an ankle matches ``LeftFoot``.
+        Hips; callers then pin XY to the ankle-midpoint and Z to the left ankle.
         """
         verts, joints_all = self._forward_smplx(self._rotvecs_from_mixamo(human_data))
         joints = joints_all[:22]

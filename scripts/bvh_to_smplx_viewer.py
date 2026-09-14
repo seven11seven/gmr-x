@@ -39,6 +39,7 @@ import mujoco.viewer as mjv
 
 from general_motion_retargeting.utils.smplx_from_mixamo import (
     SMPLX_JOINT_LEFT_ANKLE,
+    SMPLX_JOINT_RIGHT_ANKLE,
     MixamoToSMPLX,
     write_obj,
 )
@@ -59,7 +60,8 @@ from hiphi_to_robot import (
 DEFAULT_CLIP = "Change_posture-sit_down_0002"
 DEFAULT_SMPLX = _PROJECT_ROOT / "assets" / "smpl-x"
 MESH_SCALE = 0.01
-_FOOT_NAMES = ("LeftFoot", "LeftAnkle")
+_LEFT_FOOT_NAMES = ("LeftFoot", "LeftAnkle")
+_RIGHT_FOOT_NAMES = ("RightFoot", "RightAnkle")
 _FINGER_MARKERS = ("HandIndex", "HandMiddle", "HandRing", "HandPinky", "HandThumb")
 # Extra world length on top of Mixamo bone-fit (thigh = hip→knee, shin = knee→ankle).
 LEG_EXTRA_THIGH_M = 0.04
@@ -130,11 +132,19 @@ def _draw_bvh_skeleton(viewer, positions: dict, edges: list[tuple[str, str]]) ->
 
 
 def _bvh_left_foot(human_data: dict) -> np.ndarray:
-    for name in _FOOT_NAMES:
+    for name in _LEFT_FOOT_NAMES:
         pose = human_data.get(name)
         if pose is not None:
             return np.asarray(pose[0], dtype=np.float64)
     raise KeyError("BVH frame has no LeftFoot / LeftAnkle")
+
+
+def _bvh_right_foot(human_data: dict) -> np.ndarray:
+    for name in _RIGHT_FOOT_NAMES:
+        pose = human_data.get(name)
+        if pose is not None:
+            return np.asarray(pose[0], dtype=np.float64)
+    raise KeyError("BVH frame has no RightFoot / RightAnkle")
 
 
 def _bvh_head(human_data: dict) -> np.ndarray:
@@ -597,34 +607,53 @@ def main() -> int:
     print("[3/4] Skinning SMPL-X …")
     first_verts, first_joints = driver.drive(human_frames[0])
     world_verts = np.empty((len(human_frames), first_verts.shape[0], 3), dtype=np.float32)
-    smplx_foot = np.zeros((len(human_frames), 3), dtype=np.float64)
-    bvh_foot = np.zeros((len(human_frames), 3), dtype=np.float64)
+    smplx_lfoot = np.zeros((len(human_frames), 3), dtype=np.float64)
+    smplx_rfoot = np.zeros((len(human_frames), 3), dtype=np.float64)
+    bvh_lfoot = np.zeros((len(human_frames), 3), dtype=np.float64)
+    bvh_rfoot = np.zeros((len(human_frames), 3), dtype=np.float64)
     lookat = np.zeros((len(human_frames), 3), dtype=np.float64)
     world_verts[0] = first_verts
-    smplx_foot[0] = first_joints[SMPLX_JOINT_LEFT_ANKLE]
-    bvh_foot[0] = _bvh_left_foot(human_frames[0])
+    smplx_lfoot[0] = first_joints[SMPLX_JOINT_LEFT_ANKLE]
+    smplx_rfoot[0] = first_joints[SMPLX_JOINT_RIGHT_ANKLE]
+    bvh_lfoot[0] = _bvh_left_foot(human_frames[0])
+    bvh_rfoot[0] = _bvh_right_foot(human_frames[0])
     lookat[0] = np.asarray(human_frames[0]["Hips"][0], dtype=np.float64)
     for i in tqdm(range(1, len(human_frames)), desc="smplx", unit="frame"):
         verts_i, joints_i = driver.drive(human_frames[i])
         world_verts[i] = verts_i
-        smplx_foot[i] = joints_i[SMPLX_JOINT_LEFT_ANKLE]
-        bvh_foot[i] = _bvh_left_foot(human_frames[i])
+        smplx_lfoot[i] = joints_i[SMPLX_JOINT_LEFT_ANKLE]
+        smplx_rfoot[i] = joints_i[SMPLX_JOINT_RIGHT_ANKLE]
+        bvh_lfoot[i] = _bvh_left_foot(human_frames[i])
+        bvh_rfoot[i] = _bvh_right_foot(human_frames[i])
         lookat[i] = np.asarray(human_frames[i]["Hips"][0], dtype=np.float64)
 
-    # Pin SMPL-X LeftFoot (ankle) to Mixamo LeftFoot, then store ankle-local verts.
-    offset = bvh_foot - smplx_foot
+    # Horizontal: midpoint of the two ankles. Vertical: left ankle Z.
+    smplx_mid = 0.5 * (smplx_lfoot + smplx_rfoot)
+    bvh_mid = 0.5 * (bvh_lfoot + bvh_rfoot)
+    origin = np.column_stack([smplx_mid[:, 0], smplx_mid[:, 1], smplx_lfoot[:, 2]])
+    target = np.column_stack([bvh_mid[:, 0], bvh_mid[:, 1], bvh_lfoot[:, 2]])
+    offset = target - origin
     lookat = lookat + offset
-    local_verts = np.ascontiguousarray(world_verts - smplx_foot[:, None, :], dtype=np.float32)
+    local_verts = np.ascontiguousarray(world_verts - origin[:, None, :], dtype=np.float32)
     print(
-        f"  bvh_foot0={np.round(bvh_foot[0], 3).tolist()}  "
-        f"smplx_foot0={np.round(smplx_foot[0], 3).tolist()}  "
+        f"  pin XY=ankle-midpoint  Z=LeftFoot  "
         f"offset0={np.round(offset[0], 3).tolist()}",
         flush=True,
     )
     print(
+        f"  bvh_mid0={np.round(bvh_mid[0], 3).tolist()}  "
+        f"smplx_mid0={np.round(smplx_mid[0], 3).tolist()}",
+        flush=True,
+    )
+    print(
+        f"  bvh_lfoot0={np.round(bvh_lfoot[0], 3).tolist()}  "
+        f"smplx_lfoot0={np.round(smplx_lfoot[0], 3).tolist()}",
+        flush=True,
+    )
+    print(
         f"  local z=[{local_verts[0, :, 2].min():.3f}, {local_verts[0, :, 2].max():.3f}]  "
-        f"aligned world z=[{(local_verts[0, :, 2] + bvh_foot[0, 2]).min():.3f}, "
-        f"{(local_verts[0, :, 2] + bvh_foot[0, 2]).max():.3f}]",
+        f"aligned world z=[{(local_verts[0, :, 2] + target[0, 2]).min():.3f}, "
+        f"{(local_verts[0, :, 2] + target[0, 2]).max():.3f}]",
         flush=True,
     )
 
@@ -658,7 +687,7 @@ def main() -> int:
             model=model,
             verts=local_verts,
             objects=objects,
-            anchor=bvh_foot,
+            anchor=target,
             lookat=lookat,
             skel_pos=None if args.no_skeleton else skel_pos,
             skel_edges=skel_edges,
