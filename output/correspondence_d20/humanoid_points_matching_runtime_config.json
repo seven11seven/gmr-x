@@ -1,0 +1,107 @@
+{
+  "correspondence": {
+    "dataset": {
+      "exterior_method": "first_hit",
+      "exterior_occlusion_distance": 0.12,
+      "exterior_ray_distance": 0.0,
+      "exterior_surface": true,
+      "num_points": 4096,
+      "seed": 0,
+      "smpl_center": "spine1",
+      "smpl_models": [
+        {
+          "dir": "assets/smpl-x",
+          "genders": [
+            "neutral"
+          ],
+          "type": "smplx"
+        }
+      ],
+      "surface_curvature_power": 1.0,
+      "surface_curvature_weight": 0.0,
+      "surface_oversample_ratio": 8
+    },
+    "slots_field": "reconstructed_slots",
+    "smpl_name": "auto",
+    "train": {
+      "batch_size": 2,
+      "chamfer_weight": 1.0,
+      "device": "auto",
+      "dropout_ratio": 0.0,
+      "edge_graph": "geodesic",
+      "edge_k": 32,
+      "edge_weight": 0.4,
+      "epochs": 500,
+      "fixed_template": false,
+      "log_every": 100,
+      "lr": 0.001,
+      "lr_scheduler": "cosine",
+      "min_lr": 1e-05,
+      "noise_std": 0.002,
+      "normalize": "per_sample_height",
+      "repulsion_k": 8,
+      "repulsion_radius": 0.035,
+      "repulsion_weight": 0.002,
+      "resample_every": 0,
+      "residual_weight": 0.0,
+      "save_every": 1000,
+      "seed": 0,
+      "template_name": "auto",
+      "template_sort": "y_z_x"
+    }
+  },
+  "robot": {
+    "name": "d20",
+    "point_cloud_center": "body:waist_yaw_link",
+    "sample_pose": "tpose",
+    "to_smpl_frame": true,
+    "tpose_qpos": {
+      "left_ankle_pitch_joint": 0.0,
+      "left_ankle_roll_joint": 0.0,
+      "left_elbow_pitch_joint": 1.57,
+      "left_hip_pitch_joint": 0.0,
+      "left_hip_roll_joint": 0.0,
+      "left_hip_yaw_joint": 0.0,
+      "left_knee_pitch_joint": 0.0,
+      "left_shoulder_pitch_joint": 0.0,
+      "left_shoulder_roll_joint": 1.57,
+      "left_shoulder_yaw_joint": 0.0,
+      "left_wrist_pitch_joint": 0.0,
+      "left_wrist_roll_joint": 0.0,
+      "left_wrist_yaw_joint": 0.0,
+      "right_ankle_pitch_joint": 0.0,
+      "right_ankle_roll_joint": 0.0,
+      "right_elbow_pitch_joint": 1.57,
+      "right_hip_pitch_joint": 0.0,
+      "right_hip_roll_joint": 0.0,
+      "right_hip_yaw_joint": 0.0,
+      "right_knee_pitch_joint": 0.0,
+      "right_shoulder_pitch_joint": 0.0,
+      "right_shoulder_roll_joint": -1.57,
+      "right_shoulder_yaw_joint": 0.0,
+      "right_wrist_pitch_joint": 0.0,
+      "right_wrist_roll_joint": 0.0,
+      "right_wrist_yaw_joint": 0.0,
+      "waist_pitch_joint": 0.0,
+      "waist_roll_joint": 0.0,
+      "waist_yaw_joint": 0.0
+    },
+    "xml": "assets/D20_29dof/mjcf/D20.xml"
+  },
+  "smpl_template": {
+    "betas": null,
+    "gender": "neutral",
+    "name": "smplx_neutral",
+    "source": "manual",
+    "type": "smplx",
+    "use_betas": false,
+    "use_gender": true
+  },
+  "smplx_model_dir": "assets/smpl-x",
+  "view": {
+    "backend": "matplotlib",
+    "color_by": "source-part",
+    "enabled": true,
+    "lines": 0
+  }
+}

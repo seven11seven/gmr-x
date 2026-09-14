@@ -3,8 +3,8 @@
   "robot_name": "d20",
   "num_slots": 4096,
   "mean_source_bind_error": 1.1483044737303771e-08,
-  "mean_robot_bind_error": 0.039673976600170135,
-  "mean_correspondence_error": 0.1846466213464737,
+  "mean_robot_bind_error": 0.0394982174038887,
+  "mean_correspondence_error": 0.14602184295654297,
   "fields": {
     "slot_index": "Shared AE slot. The same i is one SMPL-X/robot pair.",
     "source_points / robot_points": "Paired surface points in each template root frame.",

@@ -1,0 +1,71 @@
+{
+  "smplx_model_dir": "assets/smpl-x",
+  "smpl_template": {
+    "source": "manual",
+    "type": "smplx",
+    "use_betas": false,
+    "use_gender": true,
+    "name": "smplx_neutral",
+    "gender": "neutral",
+    "betas": null
+  },
+  "robot": {
+    "to_smpl_frame": true,
+    "sample_pose": "tpose"
+  },
+  "correspondence": {
+    "slots_field": "reconstructed_slots",
+    "smpl_name": "auto",
+    "dataset": {
+      "num_points": 4096,
+      "seed": 0,
+      "smpl_center": "spine1",
+      "surface_oversample_ratio": 8,
+      "surface_curvature_weight": 0.0,
+      "surface_curvature_power": 1.0,
+      "exterior_surface": true,
+      "exterior_method": "first_hit",
+      "exterior_occlusion_distance": 0.12,
+      "exterior_ray_distance": 0.0,
+      "smpl_models": [
+        {
+          "type": "smplx",
+          "dir": "assets/smpl-x",
+          "genders": ["neutral"]
+        }
+      ]
+    },
+    "train": {
+      "template_name": "auto",
+      "template_sort": "y_z_x",
+      "normalize": "per_sample_height",
+      "epochs": 500,
+      "batch_size": 2,
+      "fixed_template": false,
+      "device": "auto",
+      "lr": 0.001,
+      "lr_scheduler": "cosine",
+      "min_lr": 1e-05,
+      "chamfer_weight": 1.0,
+      "repulsion_weight": 0.002,
+      "repulsion_k": 8,
+      "repulsion_radius": 0.035,
+      "residual_weight": 0.0,
+      "edge_weight": 0.4,
+      "edge_graph": "geodesic",
+      "edge_k": 32,
+      "noise_std": 0.002,
+      "dropout_ratio": 0.0,
+      "resample_every": 0,
+      "log_every": 100,
+      "save_every": 1000,
+      "seed": 0
+    }
+  },
+  "view": {
+    "enabled": true,
+    "backend": "matplotlib",
+    "color_by": "source-part",
+    "lines": 0
+  }
+}

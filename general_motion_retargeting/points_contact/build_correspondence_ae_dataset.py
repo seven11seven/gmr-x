@@ -183,14 +183,28 @@ def parse_args():
     parser.add_argument(
         "--d20-root-body",
         type=str,
-        default="base_link",
-        help="Root body used to express D20 visual meshes in a local frame.",
+        default="body:waist_yaw_link",
+        help=(
+            "Point-cloud center for D20 visual meshes. "
+            "UMR uses body:waist_yaw_link so the robot lines up with SMPL-X spine1, "
+            "not the free-base (base_link)."
+        ),
     )
     parser.add_argument(
         "--d20-pose",
         choices=["tpose", "default"],
-        default="tpose",
-        help="D20 pose used before surface sampling.",
+        default="default",
+        help=(
+            "D20 pose used before surface sampling. "
+            "'default' loads the MJCF keyframe named default (T-pose). "
+            "'tpose' applies the same joint values from that keyframe."
+        ),
+    )
+    parser.add_argument(
+        "--d20-reset-key",
+        type=str,
+        default="default",
+        help="MuJoCo keyframe applied before D20 sampling. Empty string skips the keyframe.",
     )
     parser.add_argument(
         "--include-supported-robots",
@@ -1067,16 +1081,40 @@ PIPLUSPRO_TPOSE_QPOS = {
 }
 
 
+# Matches D20.xml <key name="default"> (T-pose): freejoint + waist zeros,
+# L shoulder roll/elbow +1.57, R shoulder roll -1.57 / elbow +1.57, legs zero.
 D20_TPOSE_QPOS = {
+    "waist_yaw_joint": 0.0,
+    "waist_roll_joint": 0.0,
+    "waist_pitch_joint": 0.0,
     "left_shoulder_pitch_joint": 0.0,
-    "left_shoulder_roll_joint": np.deg2rad(90.0),
+    "left_shoulder_roll_joint": 1.57,
     "left_shoulder_yaw_joint": 0.0,
-    "left_elbow_pitch_joint": 0.0,
+    "left_elbow_pitch_joint": 1.57,
+    "left_wrist_roll_joint": 0.0,
+    "left_wrist_pitch_joint": 0.0,
+    "left_wrist_yaw_joint": 0.0,
     "right_shoulder_pitch_joint": 0.0,
-    "right_shoulder_roll_joint": np.deg2rad(-90.0),
+    "right_shoulder_roll_joint": -1.57,
     "right_shoulder_yaw_joint": 0.0,
-    "right_elbow_pitch_joint": 0.0,
+    "right_elbow_pitch_joint": 1.57,
+    "right_wrist_roll_joint": 0.0,
+    "right_wrist_pitch_joint": 0.0,
+    "right_wrist_yaw_joint": 0.0,
+    "left_hip_pitch_joint": 0.0,
+    "left_hip_roll_joint": 0.0,
+    "left_hip_yaw_joint": 0.0,
+    "left_knee_pitch_joint": 0.0,
+    "left_ankle_pitch_joint": 0.0,
+    "left_ankle_roll_joint": 0.0,
+    "right_hip_pitch_joint": 0.0,
+    "right_hip_roll_joint": 0.0,
+    "right_hip_yaw_joint": 0.0,
+    "right_knee_pitch_joint": 0.0,
+    "right_ankle_pitch_joint": 0.0,
+    "right_ankle_roll_joint": 0.0,
 }
+D20_RESET_KEY = "default"
 
 
 PND_ADAM_LITE_TPOSE_QPOS = {
@@ -1328,7 +1366,8 @@ def build_robot_sample(
     )
     print(
         f"[Dataset] Added {name}: verts={len(vertices)} faces={len(faces)} "
-        f"exterior_surface={exterior_surface} exterior_method={exterior_method}"
+        f"exterior_surface={exterior_surface} exterior_method={exterior_method} "
+        f"pose={pose} reset_key={reset_key}"
     )
     return {
         "name": name,
@@ -1501,6 +1540,7 @@ def main():
                 root_body_name=args.d20_root_body,
                 tpose_qpos=D20_TPOSE_QPOS,
                 mimic_qpos=None,
+                reset_key=(str(args.d20_reset_key).strip() or None),
             )
         )
     if args.include_supported_robots:
