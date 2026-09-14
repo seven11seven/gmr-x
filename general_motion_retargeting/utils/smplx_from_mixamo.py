@@ -79,6 +79,8 @@ _MIXAMO_BIND_HUMERUS = (
     np.array([1.0, 0.0, 0.0], dtype=np.float64),
     np.array([-1.0, 0.0, 0.0], dtype=np.float64),
 )
+# Mixamo bind: thigh and shin along −Y (Y-up).
+_MIXAMO_BIND_LEG = np.array([0.0, -1.0, 0.0], dtype=np.float64)
 
 
 def _from_to_rotation(src: np.ndarray, dst: np.ndarray) -> R:
@@ -223,25 +225,44 @@ class MixamoToSMPLX:
         self.bone_scale = np.ones(22, dtype=np.float64)
         self._lbs = _as_numpy(self.model.lbs_weights).astype(np.float64)
         self._parents_all = _as_numpy(self.model.parents).astype(np.int64)
-        self._arm_rest_corr = self._compute_arm_rest_corr()
+        self._arm_rest_corr, self._thigh_rest_corr, self._shin_rest_corr = (
+            self._compute_limb_rest_corr()
+        )
 
     def set_scale(self, sh: float, sv: float) -> None:
         self.sh = float(sh)
         self.sv = float(sv)
         self._scale_yup = np.array([self.sh, self.sv, self.sh], dtype=np.float64)
 
-    def _compute_arm_rest_corr(self) -> tuple[R, R]:
-        """Align SMPL-X rest humeri to Mixamo bind (±X).
+    def _compute_limb_rest_corr(self) -> tuple[tuple[R, R], tuple[R, R], tuple[R, R]]:
+        """Align SMPL-X rest limb bones to Mixamo bind axes.
 
-        Neutral SMPL-X rest arms already sit ~15–18° down and in. Copying
-        Mixamo locals on top of that makes hanging arms sag into the torso.
+        Neutral rest is not a strict T: humeri sit ~9–18° off ±X, thighs and
+        shins ~4–8° off −Y. Each correction is applied on the parent joint
+        that aims that bone; the child local is conjugated so world pose of
+        the rest of the chain stays Mixamo's.
         """
         torch = self._torch
         with torch.no_grad():
             rest = self.model().joints[0].cpu().numpy().astype(np.float64)
-        left = _from_to_rotation(rest[18] - rest[16], _MIXAMO_BIND_HUMERUS[0])
-        right = _from_to_rotation(rest[19] - rest[17], _MIXAMO_BIND_HUMERUS[1])
-        return left, right
+        arm = (
+            _from_to_rotation(rest[18] - rest[16], _MIXAMO_BIND_HUMERUS[0]),
+            _from_to_rotation(rest[19] - rest[17], _MIXAMO_BIND_HUMERUS[1]),
+        )
+        thigh = (
+            _from_to_rotation(rest[4] - rest[1], _MIXAMO_BIND_LEG),
+            _from_to_rotation(rest[5] - rest[2], _MIXAMO_BIND_LEG),
+        )
+        shin = (
+            _from_to_rotation(rest[7] - rest[4], _MIXAMO_BIND_LEG),
+            _from_to_rotation(rest[8] - rest[5], _MIXAMO_BIND_LEG),
+        )
+        return arm, thigh, shin
+
+    @staticmethod
+    def _apply_rest_corr(rotvecs: np.ndarray, joint: int, child: int, corr: R) -> None:
+        rotvecs[joint] = (R.from_rotvec(rotvecs[joint]) * corr).as_rotvec()
+        rotvecs[child] = (corr.inv() * R.from_rotvec(rotvecs[child])).as_rotvec()
 
     def rest_height(self) -> float:
         """SMPL-X T-pose height in the model's Y-up frame (metres)."""
@@ -277,8 +298,13 @@ class MixamoToSMPLX:
         # around the upper arm so the mesh is not wrung at the elbow.
         for j in _ELBOW_JOINTS:
             rotvecs[j, 0] = 0.0
-        rotvecs[16] = (R.from_rotvec(rotvecs[16]) * self._arm_rest_corr[0]).as_rotvec()
-        rotvecs[17] = (R.from_rotvec(rotvecs[17]) * self._arm_rest_corr[1]).as_rotvec()
+        # Rest-align: R_j' = R_j * R_corr, child' = R_corr^{-1} * R_child.
+        self._apply_rest_corr(rotvecs, 16, 18, self._arm_rest_corr[0])
+        self._apply_rest_corr(rotvecs, 17, 19, self._arm_rest_corr[1])
+        self._apply_rest_corr(rotvecs, 1, 4, self._thigh_rest_corr[0])
+        self._apply_rest_corr(rotvecs, 2, 5, self._thigh_rest_corr[1])
+        self._apply_rest_corr(rotvecs, 4, 7, self._shin_rest_corr[0])
+        self._apply_rest_corr(rotvecs, 5, 8, self._shin_rest_corr[1])
         return rotvecs
 
     def _forward_smplx(self, rotvecs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
