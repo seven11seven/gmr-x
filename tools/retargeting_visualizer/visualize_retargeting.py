@@ -49,6 +49,10 @@ from general_motion_retargeting.utils.xsens_vendor.BVHParser import (
     quat_fk,
     remove_quat_discontinuities,
 )
+from general_motion_retargeting.utils.xsens import (
+    footmod_parent_edges,
+    synthesize_footmod,
+)
 
 # ---------------------------------------------------------------------------
 # Default paths (relative to project root)
@@ -169,19 +173,7 @@ def load_bvh_all_frames(
                 global_positions[frame_idx, joint_idx].copy(),
                 global_quats[frame_idx, joint_idx].copy(),
             ]
-        # Synthetic FootMod joints (ankle pos + toe orientation)
-        for side in ("Left", "Right"):
-            ankle, toe, mod = f"{side}Ankle", f"{side}Toe", f"{side}FootMod"
-            if ankle in result and toe in result:
-                result[mod] = [result[ankle][0].copy(),
-                               result[toe][1].copy()]
-            else:
-                ankle_alt, toe_alt, mod_alt = (
-                    f"{side}Foot", f"{side}ToeBase", f"{side}FootMod"
-                )
-                if ankle_alt in result and toe_alt in result:
-                    result[mod_alt] = [result[ankle_alt][0].copy(),
-                                       result[toe_alt][1].copy()]
+        synthesize_footmod(result)
         frames.append(result)
 
     def _pose_pos(frame, *names):
@@ -225,12 +217,7 @@ def get_human_edges(parser):
         if (not pname.endswith("_end_site")
                 and pname in name_set and name in name_set):
             edges.append((pname, name))
-    # Add FootMod edges
-    for side in ("Left", "Right"):
-        mod, ankle = f"{side}FootMod", f"{side}Ankle"
-        if mod in name_set or ankle in name_set:
-            if ankle in name_set:
-                edges.append((ankle, mod))
+    edges.extend(footmod_parent_edges(name_set))
     return edges
 
 

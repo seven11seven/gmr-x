@@ -545,7 +545,16 @@ class GeneralMotionRetargeting:
         positions = []
         quaternions = []
         for body_name, *_ in body_entries:
-            pos, quat = human_data[body_name]
+            try:
+                pos, quat = human_data[body_name]
+            except KeyError as exc:
+                raise KeyError(
+                    f"IK mapping references human joint {body_name!r}, "
+                    f"which is missing from the loaded BVH frame. "
+                    f"Check the skeleton names (e.g. Mixamo uses LeftFoot "
+                    f"instead of LeftAnkle; FootMod is synthesized from "
+                    f"ankle+toe)."
+                ) from exc
             positions.append(pos)
             quaternions.append(quat)
 

@@ -172,6 +172,136 @@ def scale_mesh_to_skeleton_head(driver: MixamoToSMPLX, human_data: dict) -> tupl
     return scale, target_h, posed_h
 
 
+def compute_stretched_smplx_motion(
+    driver: MixamoToSMPLX,
+    human_frames: list[dict],
+    *,
+    fit_bones: bool = True,
+    align_to_head: bool = True,
+    use_height: float | None = None,
+    extra_thigh_m: float = LEG_EXTRA_THIGH_M,
+    extra_shin_m: float = LEG_EXTRA_SHIN_M,
+    verbose: bool = True,
+) -> dict:
+    """Bone-fit, height-scale, extra-leg stretch, drive, and ankle-pin.
+
+    Same transform as the MuJoCo viewer: Mixamo bone-fit (arms stay 1.0),
+    optional crown-to-Head scale, then +4 cm thigh / +3 cm shin, then pin
+    XY to the BVH ankle midpoint and Z to the left ankle.
+    """
+    log = print if verbose else (lambda *a, **k: None)
+    fit = None
+    if fit_bones:
+        fit = driver.fit_bone_scales(human_frames[0])
+        log(
+            f"  bone-fit ({fit['mode']}) from frame 0  "
+            f"leg×{fit['leg']:.3f}  torso×{fit['torso']:.3f}  arm×{fit['arm']:.3f}"
+        )
+        for j, name in enumerate(
+            ("Hips", "LUpLeg", "RUpLeg", "Spine", "LLeg", "RLeg", "Spine1",
+             "LFoot", "RFoot", "Spine2", "LToe", "RToe", "Neck",
+             "LShoulder", "RShoulder", "Head", "LArm", "RArm",
+             "LForeArm", "RForeArm", "LHand", "RHand")
+        ):
+            if j == 0:
+                continue
+            log(
+                f"    {name:10s}  ×{fit['scale'][j]:.3f}  "
+                f"mixamo={fit['mixamo_len'][j]:.3f}m  smplx={fit['smplx_len'][j]:.3f}m"
+            )
+
+    rest_h = driver.rest_height()
+    if align_to_head:
+        scale, target_h, posed_h = scale_mesh_to_skeleton_head(driver, human_frames[0])
+        log(f"  model gender={driver.gender}  rest_height={rest_h:.3f}m")
+        log(
+            f"  scale={scale:.4f}  so mesh crown matches Head "
+            f"(Head−ankle={target_h:.3f}m / posed crown−ankle={posed_h:.3f}m)"
+        )
+    elif use_height is not None and rest_h > 1e-6:
+        scale = float(use_height) / rest_h
+        driver.set_scale(scale, scale)
+        log(
+            f"  model gender={driver.gender}  rest_height={rest_h:.3f}m  "
+            f"uniform scale={scale:.4f}"
+        )
+    else:
+        scale = 1.0
+        log(f"  model gender={driver.gender}  (could not measure rest height)")
+
+    if extra_thigh_m or extra_shin_m:
+        driver.lengthen_leg_segments(
+            human_frames[0],
+            thigh_m=extra_thigh_m,
+            shin_m=extra_shin_m,
+        )
+        log(
+            f"  leg extra  thigh+{extra_thigh_m * 100:.0f}cm  "
+            f"shin+{extra_shin_m * 100:.0f}cm  "
+            f"(after height scale, world metres)",
+            flush=True,
+        )
+
+    first_verts, first_joints = driver.drive(human_frames[0])
+    n_frames = len(human_frames)
+    n_verts = int(first_verts.shape[0])
+    n_joints = int(first_joints.shape[0])
+    world_verts = np.empty((n_frames, n_verts, 3), dtype=np.float32)
+    world_joints = np.empty((n_frames, n_joints, 3), dtype=np.float64)
+    smplx_lfoot = np.zeros((n_frames, 3), dtype=np.float64)
+    smplx_rfoot = np.zeros((n_frames, 3), dtype=np.float64)
+    bvh_lfoot = np.zeros((n_frames, 3), dtype=np.float64)
+    bvh_rfoot = np.zeros((n_frames, 3), dtype=np.float64)
+    lookat = np.zeros((n_frames, 3), dtype=np.float64)
+    world_verts[0] = first_verts
+    world_joints[0] = first_joints
+    smplx_lfoot[0] = first_joints[SMPLX_JOINT_LEFT_ANKLE]
+    smplx_rfoot[0] = first_joints[SMPLX_JOINT_RIGHT_ANKLE]
+    bvh_lfoot[0] = _bvh_left_foot(human_frames[0])
+    bvh_rfoot[0] = _bvh_right_foot(human_frames[0])
+    lookat[0] = np.asarray(human_frames[0]["Hips"][0], dtype=np.float64)
+    for i in tqdm(range(1, n_frames), desc="smplx", unit="frame"):
+        verts_i, joints_i = driver.drive(human_frames[i])
+        world_verts[i] = verts_i
+        world_joints[i] = joints_i
+        smplx_lfoot[i] = joints_i[SMPLX_JOINT_LEFT_ANKLE]
+        smplx_rfoot[i] = joints_i[SMPLX_JOINT_RIGHT_ANKLE]
+        bvh_lfoot[i] = _bvh_left_foot(human_frames[i])
+        bvh_rfoot[i] = _bvh_right_foot(human_frames[i])
+        lookat[i] = np.asarray(human_frames[i]["Hips"][0], dtype=np.float64)
+
+    smplx_mid = 0.5 * (smplx_lfoot + smplx_rfoot)
+    bvh_mid = 0.5 * (bvh_lfoot + bvh_rfoot)
+    origin = np.column_stack([smplx_mid[:, 0], smplx_mid[:, 1], smplx_lfoot[:, 2]])
+    target = np.column_stack([bvh_mid[:, 0], bvh_mid[:, 1], bvh_lfoot[:, 2]])
+    offset = target - origin
+    lookat = lookat + offset
+    vertices_local = np.ascontiguousarray(world_verts - origin[:, None, :], dtype=np.float32)
+    joints_local = world_joints - origin[:, None, :]
+    vertices_world = np.ascontiguousarray(vertices_local + target[:, None, :], dtype=np.float32)
+    joints_world = joints_local + target[:, None, :]
+    log(
+        f"  pin XY=ankle-midpoint  Z=LeftFoot  "
+        f"offset0={np.round(offset[0], 3).tolist()}",
+        flush=True,
+    )
+    return {
+        "vertices": vertices_world,
+        "joints": np.ascontiguousarray(joints_world, dtype=np.float32),
+        "vertices_local": vertices_local,
+        "joints_local": np.ascontiguousarray(joints_local, dtype=np.float32),
+        "faces": np.asarray(driver.faces, dtype=np.int32),
+        "origin": origin.astype(np.float32),
+        "target": target.astype(np.float32),
+        "offset": offset.astype(np.float32),
+        "lookat": lookat.astype(np.float32),
+        "scale": float(scale),
+        "rest_height": float(rest_h),
+        "fit": fit,
+        "bone_scale": np.asarray(driver.bone_scale, dtype=np.float32),
+    }
+
+
 def build_smplx_scene_xml(
     smplx_obj: Path,
     objects: list[HiphiObject],
@@ -547,52 +677,7 @@ def main() -> int:
 
     print("[2/4] Loading SMPL-X and object tracks …")
     driver = MixamoToSMPLX(smplx_model, gender=gender, ext="pkl")
-    if not args.no_fit_bones:
-        fit = driver.fit_bone_scales(human_frames[0])
-        print(
-            f"  bone-fit ({fit['mode']}) from frame 0  "
-            f"leg×{fit['leg']:.3f}  torso×{fit['torso']:.3f}  arm×{fit['arm']:.3f}"
-        )
-        for j, name in enumerate(
-            ("Hips", "LUpLeg", "RUpLeg", "Spine", "LLeg", "RLeg", "Spine1",
-             "LFoot", "RFoot", "Spine2", "LToe", "RToe", "Neck",
-             "LShoulder", "RShoulder", "Head", "LArm", "RArm",
-             "LForeArm", "RForeArm", "LHand", "RHand")
-        ):
-            if j == 0:
-                continue
-            print(
-                f"    {name:10s}  ×{fit['scale'][j]:.3f}  "
-                f"mixamo={fit['mixamo_len'][j]:.3f}m  smplx={fit['smplx_len'][j]:.3f}m"
-            )
-    rest_h = driver.rest_height()
     align_to_head = args.human_height == "bvh"
-    if align_to_head:
-        scale, target_h, posed_h = scale_mesh_to_skeleton_head(driver, human_frames[0])
-        print(f"  model gender={driver.gender}  rest_height={rest_h:.3f}m")
-        print(f"  scale={scale:.4f}  so mesh crown matches Head "
-              f"(Head−ankle={target_h:.3f}m / posed crown−ankle={posed_h:.3f}m)")
-    elif rest_h > 1e-6:
-        scale = use_height / rest_h
-        driver.set_scale(scale, scale)
-        print(f"  model gender={driver.gender}  rest_height={rest_h:.3f}m  "
-              f"uniform scale={scale:.4f}  (T-pose AABB → {height_label})")
-    else:
-        print(f"  model gender={driver.gender}  (could not measure rest height)")
-
-    if LEG_EXTRA_THIGH_M or LEG_EXTRA_SHIN_M:
-        driver.lengthen_leg_segments(
-            human_frames[0],
-            thigh_m=LEG_EXTRA_THIGH_M,
-            shin_m=LEG_EXTRA_SHIN_M,
-        )
-        print(
-            f"  leg extra  thigh+{LEG_EXTRA_THIGH_M * 100:.0f}cm  "
-            f"shin+{LEG_EXTRA_SHIN_M * 100:.0f}cm  "
-            f"(after height scale, world metres)",
-            flush=True,
-        )
-
     for obj in objects:
         obj.mesh_scale_xyz = np.full(3, MESH_SCALE, dtype=np.float64)
         obj.pos_zup, obj.quat_wxyz = load_object_track(
@@ -605,57 +690,19 @@ def main() -> int:
               f"pos0={np.round(obj.pos_zup[0], 3).tolist()}")
 
     print("[3/4] Skinning SMPL-X …")
-    first_verts, first_joints = driver.drive(human_frames[0])
-    world_verts = np.empty((len(human_frames), first_verts.shape[0], 3), dtype=np.float32)
-    smplx_lfoot = np.zeros((len(human_frames), 3), dtype=np.float64)
-    smplx_rfoot = np.zeros((len(human_frames), 3), dtype=np.float64)
-    bvh_lfoot = np.zeros((len(human_frames), 3), dtype=np.float64)
-    bvh_rfoot = np.zeros((len(human_frames), 3), dtype=np.float64)
-    lookat = np.zeros((len(human_frames), 3), dtype=np.float64)
-    world_verts[0] = first_verts
-    smplx_lfoot[0] = first_joints[SMPLX_JOINT_LEFT_ANKLE]
-    smplx_rfoot[0] = first_joints[SMPLX_JOINT_RIGHT_ANKLE]
-    bvh_lfoot[0] = _bvh_left_foot(human_frames[0])
-    bvh_rfoot[0] = _bvh_right_foot(human_frames[0])
-    lookat[0] = np.asarray(human_frames[0]["Hips"][0], dtype=np.float64)
-    for i in tqdm(range(1, len(human_frames)), desc="smplx", unit="frame"):
-        verts_i, joints_i = driver.drive(human_frames[i])
-        world_verts[i] = verts_i
-        smplx_lfoot[i] = joints_i[SMPLX_JOINT_LEFT_ANKLE]
-        smplx_rfoot[i] = joints_i[SMPLX_JOINT_RIGHT_ANKLE]
-        bvh_lfoot[i] = _bvh_left_foot(human_frames[i])
-        bvh_rfoot[i] = _bvh_right_foot(human_frames[i])
-        lookat[i] = np.asarray(human_frames[i]["Hips"][0], dtype=np.float64)
-
-    # Horizontal: midpoint of the two ankles. Vertical: left ankle Z.
-    smplx_mid = 0.5 * (smplx_lfoot + smplx_rfoot)
-    bvh_mid = 0.5 * (bvh_lfoot + bvh_rfoot)
-    origin = np.column_stack([smplx_mid[:, 0], smplx_mid[:, 1], smplx_lfoot[:, 2]])
-    target = np.column_stack([bvh_mid[:, 0], bvh_mid[:, 1], bvh_lfoot[:, 2]])
-    offset = target - origin
-    lookat = lookat + offset
-    local_verts = np.ascontiguousarray(world_verts - origin[:, None, :], dtype=np.float32)
-    print(
-        f"  pin XY=ankle-midpoint  Z=LeftFoot  "
-        f"offset0={np.round(offset[0], 3).tolist()}",
-        flush=True,
+    motion = compute_stretched_smplx_motion(
+        driver,
+        human_frames,
+        fit_bones=not args.no_fit_bones,
+        align_to_head=align_to_head,
+        use_height=None if align_to_head else use_height,
+        extra_thigh_m=LEG_EXTRA_THIGH_M,
+        extra_shin_m=LEG_EXTRA_SHIN_M,
+        verbose=True,
     )
-    print(
-        f"  bvh_mid0={np.round(bvh_mid[0], 3).tolist()}  "
-        f"smplx_mid0={np.round(smplx_mid[0], 3).tolist()}",
-        flush=True,
-    )
-    print(
-        f"  bvh_lfoot0={np.round(bvh_lfoot[0], 3).tolist()}  "
-        f"smplx_lfoot0={np.round(smplx_lfoot[0], 3).tolist()}",
-        flush=True,
-    )
-    print(
-        f"  local z=[{local_verts[0, :, 2].min():.3f}, {local_verts[0, :, 2].max():.3f}]  "
-        f"aligned world z=[{(local_verts[0, :, 2] + target[0, 2]).min():.3f}, "
-        f"{(local_verts[0, :, 2] + target[0, 2]).max():.3f}]",
-        flush=True,
-    )
+    local_verts = motion["vertices_local"]
+    target = np.asarray(motion["target"], dtype=np.float64)
+    lookat = np.asarray(motion["lookat"], dtype=np.float64)
 
     print("  writing rest mesh …", flush=True)
     tmp_obj = tempfile.NamedTemporaryFile(

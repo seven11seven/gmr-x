@@ -115,17 +115,12 @@ def get_robot_body_edges(bodies):
 
 def _attach_footmod_and_edges(parser, frame_data: dict):
     """Add synthetic FootMod joints and parent→child edges."""
-    for side in ("Left", "Right"):
-        ankle_candidates = [f"{side}Ankle", f"{side}Foot"]
-        toe_candidates = [f"{side}Toe", f"{side}ToeBase"]
-        ankle_name = next((n for n in ankle_candidates if n in frame_data), None)
-        toe_name = next((n for n in toe_candidates if n in frame_data), None)
-        mod = f"{side}FootMod"
-        if ankle_name and toe_name:
-            frame_data[mod] = [
-                frame_data[ankle_name][0].copy(),
-                frame_data[toe_name][1].copy(),
-            ]
+    from general_motion_retargeting.utils.xsens import (
+        footmod_parent_edges,
+        synthesize_footmod,
+    )
+
+    synthesize_footmod(frame_data)
 
     edges = []
     name_set = set(frame_data.keys())
@@ -139,13 +134,7 @@ def _attach_footmod_and_edges(parser, frame_data: dict):
         if (not pname.endswith("_end_site")
                 and pname in name_set and name in name_set):
             edges.append((pname, name))
-    for side in ("Left", "Right"):
-        mod = f"{side}FootMod"
-        if mod in frame_data:
-            ankle_candidates = [f"{side}Ankle", f"{side}Foot"]
-            ankle_name = next((n for n in ankle_candidates if n in frame_data), None)
-            if ankle_name:
-                edges.append((ankle_name, mod))
+    edges.extend(footmod_parent_edges(name_set))
     return frame_data, edges
 
 
