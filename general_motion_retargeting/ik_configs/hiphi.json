@@ -414,6 +414,11 @@
     },
     "ik_match_table2": {},
     "offset_to_ground": false,
+    "object_robot": {
+        "mesh_scale": [1.0, 1.0, 1.0],
+        "pos_scale": [1.0, 1.0, 1.0],
+        "pos_offset": [0.0, 0.0, 0.0]
+    },
     "robot_root_name": "aux_base",
     "use_frame_joint_damper": false,
     "use_ik_match_table1": true,

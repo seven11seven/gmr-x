@@ -12,12 +12,13 @@ are metres / Y-up / xyzw. Poses are remapped with the same ``zxy`` axis order as
 Do **not** use vis_mesh's Rx(+90°) here; that convention does not match the BVH.
 
 SMPL-X↔object stays in the stretch-only world: tracks unscaled, mesh
-``0.01`` (cm→m). Robot↔object keeps that XY and only scales **vertical**
-by Hips-Z / thigh-Z so the chair height matches unscaled robot thighs
-without shifting the footprint. The robot mesh is never scaled.
+``0.01`` (cm→m). Robot↔object XY follows GMR Hips
+(``root_pos * [sh, sh, sv]`` on X/Y). Size and extra pose come from IK
+JSON ``object_robot`` (``mesh_scale``, ``pos_scale``, ``pos_offset``).
+The robot mesh is never scaled.
 
 Eval viewer (side by side):
-- Robot + vertically scaled objects.
+- Robot + Hips-XY objects (config size / offset).
 - Stretched SMPL-X + unscaled objects, translated so the two contact
   drawings do not overlap. Red = SMPL-X↔object, green = robot-thigh↔object.
 
@@ -72,7 +73,7 @@ from general_motion_retargeting.utils.smplx_from_mixamo import (
 
 DEFAULT_HIPHI_ROOT = _PROJECT_ROOT / "datas" / "hiphi"
 DEFAULT_MESH_DIR = DEFAULT_HIPHI_ROOT / "object_meshes"
-DEFAULT_IK = _PROJECT_ROOT / "general_motion_retargeting" / "ik_configs" / "hiphi.json"
+DEFAULT_IK = _PROJECT_ROOT / "general_motion_retargeting" / "ik_configs" / "hiphi_sit.json"
 DEFAULT_XML = _PROJECT_ROOT / "assets" / "D20_29dof" / "mjcf" / "D20.xml"
 DEFAULT_SMPLX = _PROJECT_ROOT / "assets" / "smpl-x"
 DEFAULT_CLIP = "Posture-sit_0015"
@@ -141,6 +142,51 @@ class HiphiClip:
     meta_path: Path
     meta: dict
     objects: list[HiphiObject]
+
+
+@dataclass
+class ObjectRobotConfig:
+    """IK JSON ``object_robot``: robot-column object size and pose tweak.
+
+    World origin after GMR Hips XY::
+
+        pos' = pos * [hips_sh * pos_scale_x, hips_sh * pos_scale_y, pos_scale_z]
+               + pos_offset
+
+    Mesh is authored Y-up centimetres::
+
+        mesh_scale_xyz = 0.01 * mesh_scale
+    """
+
+    mesh_scale: np.ndarray = field(
+        default_factory=lambda: np.ones(3, dtype=np.float64)
+    )
+    pos_scale: np.ndarray = field(
+        default_factory=lambda: np.ones(3, dtype=np.float64)
+    )
+    pos_offset: np.ndarray = field(
+        default_factory=lambda: np.zeros(3, dtype=np.float64)
+    )
+
+
+def _vec3(value, default: tuple[float, float, float], name: str) -> np.ndarray:
+    if value is None:
+        return np.asarray(default, dtype=np.float64)
+    arr = np.asarray(value, dtype=np.float64).reshape(-1)
+    if arr.size == 1:
+        arr = np.full(3, float(arr[0]), dtype=np.float64)
+    if arr.size != 3:
+        raise ValueError(f"object_robot.{name} must be a scalar or length-3, got {value!r}")
+    return arr
+
+
+def parse_object_robot_config(ik_config: dict) -> ObjectRobotConfig:
+    raw = ik_config.get("object_robot") or {}
+    return ObjectRobotConfig(
+        mesh_scale=_vec3(raw.get("mesh_scale"), (1.0, 1.0, 1.0), "mesh_scale"),
+        pos_scale=_vec3(raw.get("pos_scale"), (1.0, 1.0, 1.0), "pos_scale"),
+        pos_offset=_vec3(raw.get("pos_offset"), (0.0, 0.0, 0.0), "pos_offset"),
+    )
 
 
 @dataclass
@@ -400,41 +446,66 @@ def scale_objects_like_hips(objects: list[HiphiObject], sh: float, sv: float) ->
         obj.mesh_scale_xyz = s_mesh.copy()
 
 
-def robot_object_vertical_scale(
-    hips_sv: float,
-    skeleton_sv: float | None = None,
-) -> tuple[np.ndarray, np.ndarray]:
-    """XY stays mocap; Z and mesh-up use Hips-Z / thigh-Z.
-
-    After zxy, mesh local Y is world up, so only that axis is scaled on
-    top of centimetres→metres. Horizontal footprint stays ``0.01``.
-    """
-    sk_v = float(hips_sv if skeleton_sv is None else skeleton_sv)
-    z = float(hips_sv) / max(sk_v, 1e-8)
-    s_pos = np.array([1.0, 1.0, z], dtype=np.float64)
-    s_mesh = np.array([MESH_SCALE, MESH_SCALE * z, MESH_SCALE], dtype=np.float64)
-    return s_pos, s_mesh
-
-
 def scale_objects_to_robot(
     objects: list[HiphiObject],
     hips_sh: float,
-    hips_sv: float,
-    skeleton_sh: float | None = None,
-    skeleton_sv: float | None = None,
-) -> tuple[np.ndarray, np.ndarray]:
-    """Scale robot-column objects. SMPL-X copies (``pos_smplx``) are left as-is.
+    cfg: ObjectRobotConfig,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Robot-column objects. SMPL-X copies (``pos_smplx``) stay unscaled.
 
-    Sitting keeps XY at the mocap footprint. Vertical is Hips-Z divided by
-    the thigh/leg effective scale. ``hips_sh`` / ``skeleton_sh`` are unused.
+    World XY follows GMR Hips ``root_pos * [sh, sh, sv]``. ``cfg.pos_scale``
+    and ``cfg.pos_offset`` are extra tweaks. Mesh is ``0.01 * cfg.mesh_scale``
+    in the authored local frame (Y-up).
     """
-    _ = (hips_sh, skeleton_sh)
-    s_pos, s_mesh = robot_object_vertical_scale(hips_sv, skeleton_sv)
+    s_pos = np.array(
+        [
+            float(hips_sh) * float(cfg.pos_scale[0]),
+            float(hips_sh) * float(cfg.pos_scale[1]),
+            float(cfg.pos_scale[2]),
+        ],
+        dtype=np.float64,
+    )
+    offset = np.asarray(cfg.pos_offset, dtype=np.float64).reshape(3)
+    s_mesh = MESH_SCALE * np.asarray(cfg.mesh_scale, dtype=np.float64).reshape(3)
     for obj in objects:
         if obj.pos_zup.size:
-            obj.pos_zup = obj.pos_zup * s_pos
+            obj.pos_zup = obj.pos_zup * s_pos + offset
         obj.mesh_scale_xyz = s_mesh.copy()
-    return s_pos, s_mesh
+    return s_pos, offset, s_mesh
+
+
+def map_smplx_object_points_to_robot(
+    pts_world: np.ndarray,
+    objects: list[HiphiObject],
+    point_counts: list[int],
+    mesh_mul: np.ndarray,
+) -> np.ndarray:
+    """Move contact samples from stretch-world objects onto the robot objects.
+
+    Contact is computed with ``pos_smplx`` and uniform ``0.01`` mesh.
+    ``mesh_mul`` is ``cfg.mesh_scale`` (local extra on top of that 0.01).
+    """
+    pts = np.asarray(pts_world, dtype=np.float64)
+    out = pts.copy()
+    mul = np.asarray(mesh_mul, dtype=np.float64).reshape(3)
+    start = 0
+    n_frames = int(pts.shape[0])
+    for obj, n in zip(objects, point_counts):
+        sl = slice(start, start + int(n))
+        start += int(n)
+        pos0 = np.asarray(
+            obj.pos_smplx if obj.pos_smplx.size else obj.pos_zup,
+            dtype=np.float64,
+        )
+        pos1 = np.asarray(obj.pos_zup, dtype=np.float64)
+        quats = np.asarray(obj.quat_wxyz, dtype=np.float64)
+        n_use = min(n_frames, len(pos0), len(pos1), len(quats))
+        for fi in range(n_use):
+            rot = R.from_quat(quats[fi], scalar_first=True).as_matrix()
+            local = (pts[fi, sl] - pos0[fi]) @ rot
+            local = local * mul
+            out[fi, sl] = local @ rot.T + pos1[fi]
+    return out
 
 
 def load_object_track(
@@ -892,6 +963,7 @@ def prepare_thigh_object_contact(
     )
     ik_contact = {
         "object_points_world": full_contact["object_points_world"],
+        "object_point_counts": [int(len(p)) for p in obj_local_parts],
         "distances": thigh_distances,
         "object_ids": full_contact["object_ids"][:, thigh_idx],
         "pair_vectors": full_contact["pair_vectors"][:, thigh_idx],
@@ -1100,7 +1172,7 @@ def launch_viewer(
     print("  Controls: ← → frame   ↑ ↓ ±10   Space play/pause   1-5 speed   "
           "M SMPL-X   R restart   Esc close")
     obj_names = ", ".join(f"{o.object_id}({o.category})" for o in objects) or "(none)"
-    print(f"  Robot column: optimized robot + objects (XY mocap, Z×thigh)  ({obj_names})")
+    print(f"  Robot column: optimized robot + objects (Hips XY + object_robot)  ({obj_names})")
     if smplx is not None:
         print(
             f"  SMPL-X column: stretched mesh + unscaled objects (cm→m), "
@@ -1373,28 +1445,22 @@ def main() -> int:
         verbose=False,
     )
     sh, sv = hips_object_scales(ik_config, use_height)
-    leg_sh, leg_sv = leg_object_scales(ik_config, use_height)
-    s_pos, s_mesh = robot_object_vertical_scale(sv, leg_sv)
+    obj_cfg = parse_object_robot_config(ik_config)
     assumed = float(ik_config.get("human_height_assumption", 1.8))
     ratio = use_height / assumed if assumed > 1e-8 else 1.0
     root = str(ik_config.get("human_root_name") or "Hips")
     json_h = float((ik_config.get("human_scale_table_horizontal") or {}).get(root, sh / max(ratio, 1e-8)))
     json_v = float((ik_config.get("human_scale_table_vertical") or {}).get(root, sv / max(ratio, 1e-8)))
     print(
-        f"  JSON {root} (GMR Mixamo IK only)  horizontal={json_h:.4f}  "
+        f"  JSON {root} (GMR Mixamo IK)  horizontal={json_h:.4f}  "
         f"vertical={json_v:.4f}  height_ratio={ratio:.4f}  → sh={sh:.4f} sv={sv:.4f}"
     )
     print(
-        f"  thigh/leg effective (Z divisor)  "
-        f"sv={leg_sv:.4f}  bones={','.join(LEG_SCALE_BONES)}"
+        f"  object_robot  mesh_scale={np.round(obj_cfg.mesh_scale, 4).tolist()}  "
+        f"pos_scale={np.round(obj_cfg.pos_scale, 4).tolist()}  "
+        f"pos_offset={np.round(obj_cfg.pos_offset, 4).tolist()}"
     )
-    print(
-        f"  SMPL-X objects  pos×[1, 1, 1]  mesh×{MESH_SCALE}  (stretch world)"
-    )
-    print(
-        f"  robot objects   pos×{np.round(s_pos, 4).tolist()}  "
-        f"mesh×{np.round(s_mesh, 5).tolist()}  (XY mocap, Z only)"
-    )
+    print(f"  SMPL-X objects  pos×[1, 1, 1]  mesh×{MESH_SCALE}  (stretch world)")
 
     object_contact = None
     smplx_vis = None
@@ -1441,8 +1507,10 @@ def main() -> int:
     elif float(args.object_contact_cost) <= 0.0:
         print("  object contact: off (cost=0)")
 
-    s_pos, s_mesh = scale_objects_to_robot(
-        objects, sh, sv, skeleton_sh=leg_sh, skeleton_sv=leg_sv
+    s_pos, pos_offset, s_mesh = scale_objects_to_robot(objects, sh, obj_cfg)
+    print(
+        f"  robot objects   origin×{np.round(s_pos, 4).tolist()}  "
+        f"+ {np.round(pos_offset, 4).tolist()}  mesh×{np.round(s_mesh, 5).tolist()}"
     )
     for obj in objects:
         print(
@@ -1451,8 +1519,17 @@ def main() -> int:
             f"smplx pos0={np.round(obj.pos_smplx[0], 3).tolist()}"
         )
     if object_contact is not None:
-        pts = np.asarray(object_contact["object_points_world"], dtype=np.float64)
-        object_contact["object_points_world"] = pts * s_pos
+        counts = object_contact.get("object_point_counts")
+        if counts:
+            object_contact["object_points_world"] = map_smplx_object_points_to_robot(
+                object_contact["object_points_world"],
+                objects,
+                counts,
+                obj_cfg.mesh_scale,
+            )
+        else:
+            pts = np.asarray(object_contact["object_points_world"], dtype=np.float64)
+            object_contact["object_points_world"] = pts * s_pos + pos_offset
 
     qpos, contact_pairs = retarget_frames(
         retargeter, human_frames, object_contact=object_contact
@@ -1491,10 +1568,11 @@ def main() -> int:
             "ik_config": str(ik_path),
             "robot_xml": str(xml_path),
             "human_height": use_height,
-            "object_scale_horizontal": sh,
-            "object_scale_vertical": sv,
-            "leg_scale_horizontal": leg_sh,
-            "leg_scale_vertical": leg_sv,
+            "hips_scale_horizontal": sh,
+            "hips_scale_vertical": sv,
+            "object_pos_scale": s_pos,
+            "object_pos_offset": pos_offset,
+            "object_mesh_scale": s_mesh,
             "objects": [
                 {
                     "object_id": o.object_id,
