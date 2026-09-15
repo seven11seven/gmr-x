@@ -109,7 +109,11 @@ def contact_frame_dict(
     body_points: np.ndarray,
     sides: np.ndarray,
 ) -> dict:
-    """Slice a full-sequence contact map into the UMR per-frame payload."""
+    """Slice a full-sequence contact map into the per-frame IK payload.
+
+    Row ``i`` is one correspondence slot: SMPL-X id, object id, and pair vector.
+    The robot task uses the same row as its slot index.
+    """
     ids = np.asarray(contact["object_ids"][frame_index], dtype=np.int32).reshape(-1)
     obj_world = np.asarray(contact["object_points_world"][frame_index], dtype=np.float64)
     return {

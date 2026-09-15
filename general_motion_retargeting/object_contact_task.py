@@ -1,14 +1,13 @@
-"""Mink task: match robot thigh-mesh points to SMPL-X object-contact vectors.
+"""Mink task: copy SMPL-X–object contact vectors onto corresponding robot slots.
 
 UMR residual (``retarget_smpl_to_humanoid_surface_vector.py`` 1835–1879)::
 
     current = p_robot - p_object
     e = cost * strength * (current - target_vector)
 
-``target_vector`` comes from stretched SMPL-X thigh verts vs the scaled object.
-Robot points are samples on the thigh visual meshes, expressed in geom frames
-so ``mj_jac`` of the world point is the task Jacobian. Mink already stacks
-custom tasks (see ``FrameJointDamperTask``); this is the same QP path.
+Each active SMPL-X correspondence slot keeps its object id and pair vector.
+The same slot index on the robot (geom + local offset from the AE mapping)
+is the IK point. Mapping is identity on slot id — not posed nearest-neighbour.
 """
 from __future__ import annotations
 
@@ -149,7 +148,6 @@ class ObjectContactTask(mink.Task):
         cost: float = 8.0,
         threshold: float = 0.10,
         max_points: int = 32,
-        max_match_distance: float = 0.30,
         lm_damping: float = 1.0,
         gain: float = 1.0,
     ) -> None:
@@ -164,11 +162,6 @@ class ObjectContactTask(mink.Task):
         self.base_cost = float(cost)
         self.threshold = float(threshold)
         self.max_points = int(max_points)
-        self.max_match_distance = float(max_match_distance)
-        self._side_index = {
-            0: np.where(self.sides == 0)[0].astype(np.int32),
-            1: np.where(self.sides == 1)[0].astype(np.int32),
-        }
         self.active_slot_ids = np.zeros(0, dtype=np.int32)
         self.object_points = np.zeros((0, 3), dtype=np.float64)
         self.target_vectors = np.zeros((0, 3), dtype=np.float64)
@@ -185,7 +178,13 @@ class ObjectContactTask(mink.Task):
         self.n_active = 0
 
     def set_from_smpl_frame(self, configuration, frame: dict | None) -> int:
-        """Match active SMPL thigh contacts to nearest same-side robot points."""
+        """Activate robot–object pairs by correspondence slot id.
+
+        ``frame`` arrays are already aligned with ``self.geom_ids``: row ``i`` is
+        SMPL-X slot ``i``, object id ``i``, and robot slot ``i``. Active rows
+        keep that identity; pair vectors are the IK targets.
+        """
+        del configuration  # pairing is slot identity, not posed nearest-neighbour
         if frame is None or self.base_cost <= 0.0 or self.threshold < 0.0:
             self.clear()
             return 0
@@ -193,19 +192,17 @@ class ObjectContactTask(mink.Task):
         object_ids = np.asarray(frame["object_ids"], dtype=np.int32).reshape(-1)
         target_vectors = np.asarray(frame["pair_vectors"], dtype=np.float64).reshape(-1, 3)
         object_points = np.asarray(frame["object_points"], dtype=np.float64).reshape(-1, 3)
-        body_points = np.asarray(frame["body_points"], dtype=np.float64).reshape(-1, 3)
-        smpl_sides = np.asarray(frame["sides"], dtype=np.int32).reshape(-1)
-        if len(distances) != len(body_points) or len(smpl_sides) != len(distances):
+        n_slots = int(len(self.geom_ids))
+        if len(distances) != n_slots or len(object_ids) != n_slots or len(target_vectors) != n_slots:
             raise ValueError(
-                "Object contact frame length mismatch: "
-                f"distances={len(distances)} body={len(body_points)} sides={len(smpl_sides)}"
+                "Object contact frame must match robot correspondence slots: "
+                f"distances={len(distances)} object_ids={len(object_ids)} "
+                f"pair_vectors={len(target_vectors)} robot={n_slots}"
             )
         active = np.where(distances <= self.threshold)[0].astype(np.int32)
         if active.size == 0 or len(object_points) == 0:
             self.clear()
             return 0
-        if self.max_points > 0 and active.size > self.max_points:
-            active = active[np.argsort(distances[active])[: self.max_points]]
         paired_ids = object_ids[active]
         valid = (paired_ids >= 0) & (paired_ids < len(object_points))
         active = active[valid]
@@ -213,56 +210,22 @@ class ObjectContactTask(mink.Task):
         if active.size == 0:
             self.clear()
             return 0
+        if self.max_points > 0 and active.size > self.max_points:
+            keep = np.argsort(distances[active])[: self.max_points]
+            active = active[keep]
+            paired_ids = paired_ids[keep]
 
-        robot_pts = robot_cloud_world_points(
-            configuration.data, self.geom_ids, self.local_pos
+        strength = np.clip(
+            (self.threshold - distances[active]) / max(self.threshold, 1e-8),
+            0.5,
+            1.0,
         )
-        used = np.zeros(len(self.geom_ids), dtype=bool)
-        slot_ids: list[int] = []
-        obj_pts: list[np.ndarray] = []
-        tgt_vecs: list[np.ndarray] = []
-        strengths: list[float] = []
-        max_d2 = self.max_match_distance * self.max_match_distance
-        # Tightest SMPL contacts first, so they claim the nearest robot slots.
-        order = np.argsort(distances[active])
-        for row in order:
-            src = int(active[row])
-            side = int(smpl_sides[src])
-            candidates = self._side_index.get(side)
-            if candidates is None or candidates.size == 0:
-                continue
-            free = candidates[~used[candidates]]
-            if free.size == 0:
-                continue
-            delta = robot_pts[free] - body_points[src]
-            d2 = np.einsum("ij,ij->i", delta, delta)
-            best = int(np.argmin(d2))
-            if max_d2 > 0.0 and float(d2[best]) > max_d2:
-                continue
-            slot = int(free[best])
-            used[slot] = True
-            slot_ids.append(slot)
-            obj_pts.append(object_points[int(paired_ids[row])])
-            tgt_vecs.append(target_vectors[src])
-            strengths.append(
-                float(
-                    np.clip(
-                        (self.threshold - distances[src]) / max(self.threshold, 1e-8),
-                        0.5,
-                        1.0,
-                    )
-                )
-            )
-
-        if not slot_ids:
-            self.clear()
-            return 0
-        self.active_slot_ids = np.asarray(slot_ids, dtype=np.int32)
-        self.object_points = np.stack(obj_pts, axis=0)
-        self.target_vectors = np.stack(tgt_vecs, axis=0)
-        self.row_costs = self.base_cost * np.asarray(strengths, dtype=np.float64)
+        self.active_slot_ids = active
+        self.object_points = object_points[paired_ids]
+        self.target_vectors = target_vectors[active]
+        self.row_costs = self.base_cost * np.asarray(strength, dtype=np.float64)
         self.cost = np.repeat(self.row_costs, 3)
-        self.n_active = int(len(slot_ids))
+        self.n_active = int(len(active))
         return self.n_active
 
     def _active_world_points(self, configuration) -> np.ndarray:

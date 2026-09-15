@@ -415,7 +415,7 @@
     "ik_match_table2": {},
     "offset_to_ground": false,
     "object_robot": {
-        "mesh_scale": [1.2, 1.5, 1.2],
+        "mesh_scale": [1.2, 1.2, 1.2],
         "pos_scale": [1.0, 1.0, 1.0],
         "pos_offset": [-0.04, 0.0, 0.0]
     },

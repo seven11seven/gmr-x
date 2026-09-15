@@ -78,6 +78,12 @@ DEFAULT_XML = _PROJECT_ROOT / "assets" / "D20_29dof" / "mjcf" / "D20.xml"
 DEFAULT_SMPLX = _PROJECT_ROOT / "assets" / "smpl-x"
 DEFAULT_CLIP = "Posture-sit_0015"
 MESH_SCALE = 0.01  # OBJ centimetres → metres
+DEFAULT_CORRESPONDENCE = (
+    _PROJECT_ROOT
+    / "output"
+    / "correspondence_d20"
+    / "correspondence_contact_smplx_neutral_d20.npz"
+)
 # Mixamo bones whose GMR scale matches sitting / thigh–object contact.
 LEG_SCALE_BONES = ("LeftUpLeg", "RightUpLeg", "LeftLeg", "RightLeg")
 # Same extras as scripts/bvh_to_smplx_viewer.py (world metres after height scale).
@@ -897,20 +903,39 @@ def prepare_thigh_object_contact(
     *,
     align_to_head: bool,
     use_height: float,
+    correspondence_path: Path | None,
     object_samples: int = 1024,
     snap_threshold: float = 0.005,
     contact_threshold: float = 0.10,
     seed: int = 0,
 ) -> dict:
-    """Stretched SMPL-X left/right thigh verts vs scaled object samples."""
+    """Stretched SMPL-X correspondence slots vs object samples (thigh only)."""
     from bvh_to_smplx_viewer import compute_stretched_smplx_motion
     from general_motion_retargeting.utils.smplx_object_contact import (
         compute_object_contact,
         sample_object_local_points,
-        smplx_thigh_vertex_index,
+    )
+    from general_motion_retargeting.utils.smplx_robot_correspondence import (
+        load_correspondence_contact,
+        skin_source_slots,
+        thigh_slot_index,
     )
 
     driver = MixamoToSMPLX(smplx_model, gender=gender, ext="pkl")
+    pairs = None
+    slot_ids = None
+    slot_sides = None
+    slot_world = None
+    if correspondence_path is not None:
+        pairs = load_correspondence_contact(correspondence_path)
+        slot_ids, slot_sides = thigh_slot_index(pairs, driver._lbs)
+        n_left = int(np.sum(slot_sides == 0))
+        n_right = int(np.sum(slot_sides == 1))
+        print(
+            f"  correspondence  {pairs['path']}  "
+            f"slots={pairs['n_slots']}  thigh={len(slot_ids)} (L={n_left} R={n_right})"
+        )
+
     motion = compute_stretched_smplx_motion(
         driver,
         human_frames,
@@ -925,14 +950,11 @@ def prepare_thigh_object_contact(
     local_verts = np.asarray(motion["vertices_local"], dtype=np.float32)
     anchor = np.asarray(motion["target"], dtype=np.float64)
     lookat = np.asarray(motion["lookat"], dtype=np.float64)
-    thigh_idx, sides = smplx_thigh_vertex_index(driver._lbs)
-    n_left = int(np.sum(sides == 0))
-    n_right = int(np.sum(sides == 1))
-    print(
-        f"  SMPL-X thigh verts  left={n_left}  right={n_right}  "
-        f"(of {body_world.shape[1]} mesh verts)"
-    )
-    print("  SMPL-X↔object contact: stretch only (no GMR Hips second scale)")
+    if pairs is not None:
+        slot_world = skin_source_slots(body_world, pairs, slot_ids)
+        print("  SMPL-X↔object contact: stretch only, thigh correspondence slots")
+    else:
+        print("  SMPL-X↔object contact: stretch only (eval mesh, no IK slots)")
 
     obj_local_parts = []
     for i, obj in enumerate(objects):
@@ -944,34 +966,42 @@ def prepare_thigh_object_contact(
         )
         obj_local_parts.append(pts)
         print(f"  {obj.object_id}: {len(pts)} object surface pts")
+    slot_contact = None
+    if slot_world is not None:
+        slot_contact = compute_object_contact(
+            slot_world, objects, obj_local_parts, snap_threshold
+        )
     full_contact = compute_object_contact(
         body_world, objects, obj_local_parts, snap_threshold
     )
-    thigh_distances = full_contact["distances"][:, thigh_idx]
-    active = (thigh_distances <= contact_threshold).sum(axis=1)
     vis_active = (full_contact["distances"] <= contact_threshold).sum(axis=1)
-    print(
-        f"  thigh-object contact  threshold={contact_threshold:.3f}m  "
-        f"min={float(thigh_distances.min()):.4f}  "
-        f"p50={float(np.percentile(thigh_distances, 50)):.4f}  "
-        f"active min/mean/max={int(active.min())}/{float(active.mean()):.2f}/{int(active.max())}"
-    )
+    if slot_contact is not None:
+        slot_distances = slot_contact["distances"]
+        active = (slot_distances <= contact_threshold).sum(axis=1)
+        print(
+            f"  thigh-slot contact  threshold={contact_threshold:.3f}m  "
+            f"min={float(slot_distances.min()):.4f}  "
+            f"p50={float(np.percentile(slot_distances, 50)):.4f}  "
+            f"active min/mean/max={int(active.min())}/{float(active.mean()):.2f}/{int(active.max())}"
+        )
     print(
         f"  full-body vis contact  "
         f"active min/mean/max="
         f"{int(vis_active.min())}/{float(vis_active.mean()):.2f}/{int(vis_active.max())}"
     )
-    ik_contact = {
-        "object_points_world": full_contact["object_points_world"],
-        "object_point_counts": [int(len(p)) for p in obj_local_parts],
-        "distances": thigh_distances,
-        "object_ids": full_contact["object_ids"][:, thigh_idx],
-        "pair_vectors": full_contact["pair_vectors"][:, thigh_idx],
-        "snapped_count": full_contact["snapped_count"],
-        "body_points": body_world[:, thigh_idx].astype(np.float32),
-        "sides": sides,
-        "vertex_index": thigh_idx,
-    }
+    ik_contact = None
+    if slot_contact is not None:
+        ik_contact = {
+            "object_points_world": slot_contact["object_points_world"],
+            "object_point_counts": [int(len(p)) for p in obj_local_parts],
+            "distances": slot_contact["distances"],
+            "object_ids": slot_contact["object_ids"],
+            "pair_vectors": slot_contact["pair_vectors"],
+            "snapped_count": slot_contact["snapped_count"],
+            "body_points": slot_world.astype(np.float32),
+            "sides": slot_sides,
+            "slot_ids": slot_ids,
+        }
     vis = {
         "local_verts": np.ascontiguousarray(local_verts, dtype=np.float32),
         "anchor": np.asarray(anchor, dtype=np.float64),
@@ -983,7 +1013,7 @@ def prepare_thigh_object_contact(
         "object_points_world": full_contact["object_points_world"],
         "contact_threshold": float(contact_threshold),
     }
-    return {"ik": ik_contact, "vis": vis}
+    return {"ik": ik_contact, "vis": vis, "correspondence": pairs}
 
 
 def resolve_human_height(
@@ -1334,6 +1364,8 @@ def parse_args() -> argparse.Namespace:
                    help="Max active thigh contacts per IK frame")
     p.add_argument("--object-contact-samples", type=int, default=1024,
                    help="Object surface samples used for contact queries")
+    p.add_argument("--correspondence", type=Path, default=DEFAULT_CORRESPONDENCE,
+                   help="SMPL-X↔robot correspondence_contact npz (AE slot pairs)")
     p.add_argument("--max-vis-contacts", type=int, default=128,
                    help="Max SMPL-X↔object contact lines drawn per frame")
     p.add_argument("--no-object-contact", action="store_true",
@@ -1477,23 +1509,45 @@ def main() -> int:
     )
     if need_smplx_prep:
         print("[3b/4] SMPL-X thigh–object contact (IK reference + eval mesh) …")
-        payload = prepare_thigh_object_contact(
-            human_frames,
-            objects,
-            smplx_model,
-            gender,
-            sh,
-            sv,
-            align_to_head=(args.human_height == "bvh"),
-            use_height=use_height,
-            object_samples=args.object_contact_samples,
-            snap_threshold=args.object_contact_snap,
-            contact_threshold=args.object_contact_threshold,
-        )
+        try:
+            payload = prepare_thigh_object_contact(
+                human_frames,
+                objects,
+                smplx_model,
+                gender,
+                sh,
+                sv,
+                align_to_head=(args.human_height == "bvh"),
+                use_height=use_height,
+                correspondence_path=args.correspondence if use_object_contact else None,
+                object_samples=args.object_contact_samples,
+                snap_threshold=args.object_contact_snap,
+                contact_threshold=args.object_contact_threshold,
+            )
+        except FileNotFoundError as exc:
+            print(f"ERROR: {exc}")
+            return 1
         smplx_vis = payload["vis"]
         if use_object_contact:
+            from general_motion_retargeting.utils.smplx_robot_correspondence import (
+                bind_robot_slots,
+            )
+
             object_contact = payload["ik"]
+            bound = bind_robot_slots(
+                retargeter.model,
+                payload["correspondence"],
+                object_contact["slot_ids"],
+            )
+            err = np.asarray(bound["bind_error"], dtype=np.float64)
+            print(
+                f"  robot slot bind  center={bound['center_body']}  "
+                f"mean={float(err.mean()):.4f}m  p95={float(np.percentile(err, 95)):.4f}m"
+            )
             retargeter.enable_object_contact(
+                bound["geom_ids"],
+                bound["local_pos"],
+                object_contact["sides"],
                 cost=args.object_contact_cost,
                 threshold=args.object_contact_threshold,
                 max_points=args.object_contact_max_points,
