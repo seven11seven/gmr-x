@@ -11,14 +11,15 @@ are metres / Y-up / xyzw. Poses are remapped with the same ``zxy`` axis order as
 ``BVHParser`` — ``(x, y, z) → (z, x, y)`` — so the object shares the robot frame.
 Do **not** use vis_mesh's Rx(+90°) here; that convention does not match the BVH.
 
-Object position and mesh size follow the BVH Hips scale actually used by
-GMR: ``(actual_human_height / human_height_assumption) ×`` the IK JSON
-``Hips`` horizontal / vertical table. World XY × ``sh``, world Z × ``sv``.
-Mesh local Y (authored up) maps to world Z after ``zxy``, so local scale is
-``(sh, sv, sh)`` times centimetres→metres.
+SMPL-X↔object stays in the stretch-only world: tracks unscaled, mesh
+``0.01`` (cm→m). Robot↔object keeps that XY and only scales **vertical**
+by Hips-Z / thigh-Z so the chair height matches unscaled robot thighs
+without shifting the footprint. The robot mesh is never scaled.
 
-The SMPL-X overlay is driven from the BVH *before* GMR scale/offset so it
-matches the original human, not the IK-aligned skeleton.
+Eval viewer (side by side):
+- Robot + vertically scaled objects.
+- Stretched SMPL-X + unscaled objects, translated so the two contact
+  drawings do not overlap. Red = SMPL-X↔object, green = robot-thigh↔object.
 
 Examples::
 
@@ -28,6 +29,7 @@ Examples::
     python scripts/hiphi_to_robot.py --clip Change_posture-sit_down_0002__mirror
     python scripts/hiphi_to_robot.py --object-category chair --max-frames 300
     python scripts/hiphi_to_robot.py --clip Posture-sit_0004 --no-smplx
+    python scripts/hiphi_to_robot.py --clip Change_posture-sit_down_0002 --smplx-offset 3 0 0
 """
 
 from __future__ import annotations
@@ -51,6 +53,8 @@ _HERE = Path(__file__).resolve().parent
 _PROJECT_ROOT = _HERE.parent
 if str(_PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT))
+if str(_HERE) not in sys.path:
+    sys.path.insert(0, str(_HERE))
 if str(_PROJECT_ROOT / "tools") not in sys.path:
     sys.path.insert(0, str(_PROJECT_ROOT / "tools"))
 
@@ -73,6 +77,8 @@ DEFAULT_XML = _PROJECT_ROOT / "assets" / "D20_29dof" / "mjcf" / "D20.xml"
 DEFAULT_SMPLX = _PROJECT_ROOT / "assets" / "smpl-x"
 DEFAULT_CLIP = "Posture-sit_0015"
 MESH_SCALE = 0.01  # OBJ centimetres → metres
+# Mixamo bones whose GMR scale matches sitting / thigh–object contact.
+LEG_SCALE_BONES = ("LeftUpLeg", "RightUpLeg", "LeftLeg", "RightLeg")
 # Same extras as scripts/bvh_to_smplx_viewer.py (world metres after height scale).
 LEG_EXTRA_THIGH_M = 0.04
 LEG_EXTRA_SHIN_M = 0.03
@@ -115,11 +121,16 @@ class HiphiObject:
     mesh_path: Path
     track_path: Path
     pos_zup: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
+    pos_smplx: np.ndarray = field(default_factory=lambda: np.zeros((0, 3)))
     quat_wxyz: np.ndarray = field(default_factory=lambda: np.zeros((0, 4)))
     mesh_scale_xyz: np.ndarray = field(
         default_factory=lambda: np.full(3, MESH_SCALE, dtype=np.float64)
     )
+    mesh_scale_smplx: np.ndarray = field(
+        default_factory=lambda: np.full(3, MESH_SCALE, dtype=np.float64)
+    )
     mocap_id: int = -1
+    ref_mocap_id: int = -1
 
 
 @dataclass
@@ -139,6 +150,12 @@ class SmplxOverlay:
     obj_path: Path
     mesh_id: int = -1
     mocap_id: int = -1
+    lookat: np.ndarray | None = None
+    body_world: np.ndarray | None = None
+    distances: np.ndarray | None = None
+    object_ids: np.ndarray | None = None
+    object_points_world: np.ndarray | None = None
+    contact_threshold: float = 0.10
 
 
 # ---------------------------------------------------------------------------
@@ -321,17 +338,49 @@ def hiphi_pose_to_mujoco(pos_yup: np.ndarray, quat_xyzw: np.ndarray) -> tuple[np
     return pos_out, quat_wxyz
 
 
+def gmr_height_ratio(ik_config: dict, actual_human_height: float) -> float:
+    assumed = float(ik_config.get("human_height_assumption", 1.8))
+    return float(actual_human_height) / assumed if assumed > 1e-8 else 1.0
+
+
+def gmr_effective_scales(
+    ik_config: dict,
+    actual_human_height: float,
+    bone_names: tuple[str, ...] | list[str],
+) -> tuple[float, float]:
+    """Runtime Mixamo scale: JSON table × height ratio, averaged over bones.
+
+    Same numbers ``scale_human_data`` applies in the Hips local frame.
+    """
+    ratio = gmr_height_ratio(ik_config, actual_human_height)
+    table_h = ik_config.get("human_scale_table_horizontal") or ik_config.get("human_scale_table") or {}
+    table_v = ik_config.get("human_scale_table_vertical") or ik_config.get("human_scale_table") or table_h
+    hs: list[float] = []
+    vs: list[float] = []
+    for name in bone_names:
+        if name in table_h and name in table_v:
+            hs.append(float(table_h[name]) * ratio)
+            vs.append(float(table_v[name]) * ratio)
+        elif name in table_h:
+            hs.append(float(table_h[name]) * ratio)
+            vs.append(float(table_h[name]) * ratio)
+    if not hs:
+        root = str(ik_config.get("human_root_name") or "Hips")
+        if len(tuple(bone_names)) == 1 and str(tuple(bone_names)[0]) == root:
+            return ratio, ratio
+        return gmr_effective_scales(ik_config, actual_human_height, (root,))
+    return float(np.mean(hs)), float(np.mean(vs))
+
+
 def hips_object_scales(ik_config: dict, actual_human_height: float) -> tuple[float, float]:
     """BVH Hips scale: ``(actual_human_height / assumed) * JSON Hips v/h``."""
-    assumed = float(ik_config.get("human_height_assumption", 1.8))
-    ratio = float(actual_human_height) / assumed if assumed > 1e-8 else 1.0
     root = str(ik_config.get("human_root_name") or "Hips")
-    if "human_scale_table_horizontal" in ik_config:
-        sh = float(ik_config["human_scale_table_horizontal"][root]) * ratio
-        sv = float(ik_config["human_scale_table_vertical"][root]) * ratio
-        return sh, sv
-    scale = float(ik_config["human_scale_table"][root]) * ratio
-    return scale, scale
+    return gmr_effective_scales(ik_config, actual_human_height, (root,))
+
+
+def leg_object_scales(ik_config: dict, actual_human_height: float) -> tuple[float, float]:
+    """Effective GMR scale of Mixamo thighs/shins (sitting contact)."""
+    return gmr_effective_scales(ik_config, actual_human_height, LEG_SCALE_BONES)
 
 
 def scale_objects_like_hips(objects: list[HiphiObject], sh: float, sv: float) -> None:
@@ -349,6 +398,43 @@ def scale_objects_like_hips(objects: list[HiphiObject], sh: float, sv: float) ->
         if obj.pos_zup.size:
             obj.pos_zup = obj.pos_zup * s_pos
         obj.mesh_scale_xyz = s_mesh.copy()
+
+
+def robot_object_vertical_scale(
+    hips_sv: float,
+    skeleton_sv: float | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """XY stays mocap; Z and mesh-up use Hips-Z / thigh-Z.
+
+    After zxy, mesh local Y is world up, so only that axis is scaled on
+    top of centimetres→metres. Horizontal footprint stays ``0.01``.
+    """
+    sk_v = float(hips_sv if skeleton_sv is None else skeleton_sv)
+    z = float(hips_sv) / max(sk_v, 1e-8)
+    s_pos = np.array([1.0, 1.0, z], dtype=np.float64)
+    s_mesh = np.array([MESH_SCALE, MESH_SCALE * z, MESH_SCALE], dtype=np.float64)
+    return s_pos, s_mesh
+
+
+def scale_objects_to_robot(
+    objects: list[HiphiObject],
+    hips_sh: float,
+    hips_sv: float,
+    skeleton_sh: float | None = None,
+    skeleton_sv: float | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Scale robot-column objects. SMPL-X copies (``pos_smplx``) are left as-is.
+
+    Sitting keeps XY at the mocap footprint. Vertical is Hips-Z divided by
+    the thigh/leg effective scale. ``hips_sh`` / ``skeleton_sh`` are unused.
+    """
+    _ = (hips_sh, skeleton_sh)
+    s_pos, s_mesh = robot_object_vertical_scale(hips_sv, skeleton_sv)
+    for obj in objects:
+        if obj.pos_zup.size:
+            obj.pos_zup = obj.pos_zup * s_pos
+        obj.mesh_scale_xyz = s_mesh.copy()
+    return s_pos, s_mesh
 
 
 def load_object_track(
@@ -497,6 +583,31 @@ def skin_processed_smplx(
 #  Combined MuJoCo scene: robot XML + mocap object meshes + SMPL-X
 # ---------------------------------------------------------------------------
 
+def _add_mocap_mesh_body(
+    world: ET.Element,
+    body_name: str,
+    mesh_name: str,
+    rgba: str,
+    group: str,
+) -> None:
+    body = ET.SubElement(world, "body", name=body_name, mocap="true")
+    ET.SubElement(
+        body, "inertial",
+        pos="0 0 0", mass="1", diaginertia="1 1 1",
+    )
+    ET.SubElement(
+        body, "geom",
+        name=f"{body_name}_geom",
+        type="mesh",
+        mesh=mesh_name,
+        rgba=rgba,
+        contype="0",
+        conaffinity="0",
+        condim="1",
+        group=group,
+    )
+
+
 def build_scene_xml(
     robot_xml: Path,
     objects: list[HiphiObject],
@@ -533,23 +644,25 @@ def build_scene_xml(
             scale=f"{sx} {sy} {sz}",
             maxhullvert="32",
         )
-        body = ET.SubElement(world, "body", name=body_name, mocap="true")
-        ET.SubElement(
-            body, "inertial",
-            pos="0 0 0", mass="1", diaginertia="1 1 1",
-        )
-        ET.SubElement(
-            body, "geom",
-            name=f"{body_name}_geom",
-            type="mesh",
-            mesh=mesh_name,
-            rgba=_rgba_str(rgba_of(obj)),
-            contype="0",
-            conaffinity="0",
-            condim="1",
-            group="1",
-        )
+        _add_mocap_mesh_body(world, body_name, mesh_name, _rgba_str(rgba_of(obj)), "1")
         obj._body_name = body_name  # type: ignore[attr-defined]
+        obj._mesh_name = mesh_name  # type: ignore[attr-defined]
+        obj._ref_body_name = None  # type: ignore[attr-defined]
+        obj._ref_mesh_name = None  # type: ignore[attr-defined]
+        if smplx_obj is not None:
+            ref_mesh = _unique_name(f"mesh_{obj.mesh_id}_smplx", used_names)
+            rx, ry, rz = (float(x) for x in obj.mesh_scale_smplx)
+            ET.SubElement(
+                asset, "mesh",
+                name=ref_mesh,
+                file=str(obj.mesh_path.resolve()),
+                scale=f"{rx} {ry} {rz}",
+                maxhullvert="32",
+            )
+            ref_name = _unique_name(f"obj_{obj.object_id}_smplx", used_names)
+            _add_mocap_mesh_body(world, ref_name, ref_mesh, _rgba_str(rgba_of(obj)), "3")
+            obj._ref_body_name = ref_name  # type: ignore[attr-defined]
+            obj._ref_mesh_name = ref_mesh  # type: ignore[attr-defined]
 
     if smplx_obj is not None:
         ET.SubElement(
@@ -559,21 +672,8 @@ def build_scene_xml(
             scale="1 1 1",
             maxhullvert="32",
         )
-        body = ET.SubElement(world, "body", name="smplx_human", mocap="true")
-        ET.SubElement(
-            body, "inertial",
-            pos="0 0 0", mass="1", diaginertia="1 1 1",
-        )
-        ET.SubElement(
-            body, "geom",
-            name="smplx_human_geom",
-            type="mesh",
-            mesh="smplx_mesh",
-            rgba="0.92 0.72 0.58 0.45",
-            contype="0",
-            conaffinity="0",
-            condim="1",
-            group="2",
+        _add_mocap_mesh_body(
+            world, "smplx_human", "smplx_mesh", "0.92 0.72 0.58 1", "2",
         )
 
     return ET.tostring(root, encoding="unicode")
@@ -614,6 +714,21 @@ def bind_mocap_ids(model: mj.MjModel, objects: list[HiphiObject]) -> None:
         if mid < 0:
             raise RuntimeError(f"body {body_name!r} is not mocap")
         obj.mocap_id = mid
+
+
+def bind_ref_mocap_ids(model: mj.MjModel, objects: list[HiphiObject]) -> None:
+    for obj in objects:
+        ref_name = getattr(obj, "_ref_body_name", None)
+        if not ref_name:
+            obj.ref_mocap_id = -1
+            continue
+        body_id = mj.mj_name2id(model, mj.mjtObj.mjOBJ_BODY, ref_name)
+        if body_id < 0:
+            raise RuntimeError(f"mocap body {ref_name!r} missing from compiled model")
+        mid = int(model.body_mocapid[body_id])
+        if mid < 0:
+            raise RuntimeError(f"body {ref_name!r} is not mocap")
+        obj.ref_mocap_id = mid
 
 
 def bind_smplx_overlay(model: mj.MjModel, overlay: SmplxOverlay) -> None:
@@ -662,17 +777,141 @@ def register_custom_robot(xml_path: Path) -> str:
     return key
 
 
-def retarget_frames(retargeter, human_frames: list) -> tuple[np.ndarray, list[dict]]:
+def retarget_frames(
+    retargeter,
+    human_frames: list,
+    object_contact=None,
+) -> tuple[np.ndarray, list[tuple[np.ndarray | None, np.ndarray | None]]]:
+    from general_motion_retargeting.utils.smplx_object_contact import contact_frame_dict
+
     qpos_list = []
-    human_scaled = []
-    for human_data in tqdm(human_frames, desc="retarget", unit="frame"):
-        qpos = retargeter.retarget(human_data)
+    contact_pairs = []
+    n_active = []
+    for i, human_data in enumerate(tqdm(human_frames, desc="retarget", unit="frame")):
+        frame = None
+        if object_contact is not None:
+            frame = contact_frame_dict(
+                object_contact,
+                i,
+                object_contact["body_points"],
+                object_contact["sides"],
+            )
+        qpos = retargeter.retarget(human_data, object_contact_frame=frame)
         qpos_list.append(np.asarray(qpos, dtype=np.float64).copy())
-        human_scaled.append({
-            name: (val[0].copy(), val[1].copy())
-            for name, val in retargeter.scaled_human_data.items()
-        })
-    return np.stack(qpos_list, axis=0), human_scaled
+        task = getattr(retargeter, "object_contact_task", None)
+        if task is not None and task.n_active > 0:
+            robot_pts = task._active_world_points(retargeter.configuration).copy()
+            obj_pts = task.object_points.copy()
+            contact_pairs.append((robot_pts, obj_pts))
+            n_active.append(task.n_active)
+        else:
+            contact_pairs.append((None, None))
+            n_active.append(0)
+    if n_active:
+        arr = np.asarray(n_active, dtype=np.int32)
+        print(
+            f"  object-contact active pts min/mean/max="
+            f"{int(arr.min())}/{float(arr.mean()):.1f}/{int(arr.max())}"
+        )
+    return np.stack(qpos_list, axis=0), contact_pairs
+
+
+def prepare_thigh_object_contact(
+    human_frames: list[dict],
+    objects: list[HiphiObject],
+    smplx_model: Path,
+    gender: str,
+    sh: float,
+    sv: float,
+    *,
+    align_to_head: bool,
+    use_height: float,
+    object_samples: int = 1024,
+    snap_threshold: float = 0.005,
+    contact_threshold: float = 0.10,
+    seed: int = 0,
+) -> dict:
+    """Stretched SMPL-X left/right thigh verts vs scaled object samples."""
+    from bvh_to_smplx_viewer import compute_stretched_smplx_motion
+    from general_motion_retargeting.utils.smplx_object_contact import (
+        compute_object_contact,
+        sample_object_local_points,
+        smplx_thigh_vertex_index,
+    )
+
+    driver = MixamoToSMPLX(smplx_model, gender=gender, ext="pkl")
+    motion = compute_stretched_smplx_motion(
+        driver,
+        human_frames,
+        fit_bones=True,
+        align_to_head=align_to_head,
+        use_height=None if align_to_head else use_height,
+        extra_thigh_m=LEG_EXTRA_THIGH_M,
+        extra_shin_m=LEG_EXTRA_SHIN_M,
+        verbose=True,
+    )
+    body_world = np.asarray(motion["vertices"], dtype=np.float32)
+    local_verts = np.asarray(motion["vertices_local"], dtype=np.float32)
+    anchor = np.asarray(motion["target"], dtype=np.float64)
+    lookat = np.asarray(motion["lookat"], dtype=np.float64)
+    thigh_idx, sides = smplx_thigh_vertex_index(driver._lbs)
+    n_left = int(np.sum(sides == 0))
+    n_right = int(np.sum(sides == 1))
+    print(
+        f"  SMPL-X thigh verts  left={n_left}  right={n_right}  "
+        f"(of {body_world.shape[1]} mesh verts)"
+    )
+    print("  SMPL-X↔object contact: stretch only (no GMR Hips second scale)")
+
+    obj_local_parts = []
+    for i, obj in enumerate(objects):
+        pts = sample_object_local_points(
+            obj.mesh_path,
+            obj.mesh_scale_xyz,
+            object_samples,
+            seed + 17 * (i + 1),
+        )
+        obj_local_parts.append(pts)
+        print(f"  {obj.object_id}: {len(pts)} object surface pts")
+    full_contact = compute_object_contact(
+        body_world, objects, obj_local_parts, snap_threshold
+    )
+    thigh_distances = full_contact["distances"][:, thigh_idx]
+    active = (thigh_distances <= contact_threshold).sum(axis=1)
+    vis_active = (full_contact["distances"] <= contact_threshold).sum(axis=1)
+    print(
+        f"  thigh-object contact  threshold={contact_threshold:.3f}m  "
+        f"min={float(thigh_distances.min()):.4f}  "
+        f"p50={float(np.percentile(thigh_distances, 50)):.4f}  "
+        f"active min/mean/max={int(active.min())}/{float(active.mean()):.2f}/{int(active.max())}"
+    )
+    print(
+        f"  full-body vis contact  "
+        f"active min/mean/max="
+        f"{int(vis_active.min())}/{float(vis_active.mean()):.2f}/{int(vis_active.max())}"
+    )
+    ik_contact = {
+        "object_points_world": full_contact["object_points_world"],
+        "distances": thigh_distances,
+        "object_ids": full_contact["object_ids"][:, thigh_idx],
+        "pair_vectors": full_contact["pair_vectors"][:, thigh_idx],
+        "snapped_count": full_contact["snapped_count"],
+        "body_points": body_world[:, thigh_idx].astype(np.float32),
+        "sides": sides,
+        "vertex_index": thigh_idx,
+    }
+    vis = {
+        "local_verts": np.ascontiguousarray(local_verts, dtype=np.float32),
+        "anchor": np.asarray(anchor, dtype=np.float64),
+        "lookat": np.asarray(lookat, dtype=np.float64),
+        "faces": motion["faces"],
+        "body_world": np.asarray(body_world, dtype=np.float32),
+        "distances": full_contact["distances"],
+        "object_ids": full_contact["object_ids"],
+        "object_points_world": full_contact["object_points_world"],
+        "contact_threshold": float(contact_threshold),
+    }
+    return {"ik": ik_contact, "vis": vis}
 
 
 def resolve_human_height(
@@ -695,22 +934,83 @@ def resolve_human_height(
 #  Viewer
 # ---------------------------------------------------------------------------
 
-def _draw_human_overlay(viewer, human_data: dict) -> None:
-    viewer.user_scn.ngeom = 0
-    mat = np.eye(3, dtype=np.float64).flatten()
-    for _name, (pos, _quat) in human_data.items():
-        if viewer.user_scn.ngeom >= viewer.user_scn.maxgeom:
-            break
-        geom = viewer.user_scn.geoms[viewer.user_scn.ngeom]
-        mj.mjv_initGeom(
-            geom,
-            type=mj.mjtGeom.mjGEOM_SPHERE,
-            size=[0.025, 0.0, 0.0],
-            pos=np.asarray(pos, dtype=np.float64),
-            mat=mat,
-            rgba=[1.0, 0.45, 0.12, 0.85],
+def _append_contact_line(
+    scn,
+    p_body: np.ndarray,
+    p_obj: np.ndarray,
+    rgba: np.ndarray,
+) -> None:
+    ident = np.eye(3, dtype=np.float64).flatten()
+    if scn.ngeom >= scn.maxgeom:
+        return
+    mj.mjv_initGeom(
+        scn.geoms[scn.ngeom],
+        type=mj.mjtGeom.mjGEOM_SPHERE,
+        size=[0.012, 0.0, 0.0],
+        pos=p_body,
+        mat=ident,
+        rgba=rgba,
+    )
+    scn.ngeom += 1
+    delta = p_obj - p_body
+    dist = float(np.linalg.norm(delta))
+    if dist < 1e-6 or scn.ngeom >= scn.maxgeom:
+        return
+    z_axis = delta / dist
+    ref = np.array([1.0, 0.0, 0.0]) if abs(z_axis[0]) < 0.9 else np.array([0.0, 1.0, 0.0])
+    x_axis = np.cross(z_axis, ref)
+    x_axis /= np.linalg.norm(x_axis) + 1e-12
+    y_axis = np.cross(z_axis, x_axis)
+    bone_mat = np.column_stack([x_axis, y_axis, z_axis]).reshape(-1)
+    mj.mjv_initGeom(
+        scn.geoms[scn.ngeom],
+        type=mj.mjtGeom.mjGEOM_CAPSULE,
+        size=[0.004, dist * 0.5, 0.0],
+        pos=(p_body + p_obj) * 0.5,
+        mat=bone_mat,
+        rgba=rgba,
+    )
+    scn.ngeom += 1
+
+
+def _draw_robot_contact_pairs(viewer, robot_pts, obj_pts) -> None:
+    if robot_pts is None or obj_pts is None:
+        return
+    rgba = np.array([0.15, 0.85, 0.35, 0.95], dtype=np.float64)
+    n = min(len(robot_pts), len(obj_pts))
+    for i in range(n):
+        _append_contact_line(
+            viewer.user_scn,
+            np.asarray(robot_pts[i], dtype=np.float64),
+            np.asarray(obj_pts[i], dtype=np.float64),
+            rgba,
         )
-        viewer.user_scn.ngeom += 1
+
+
+def _draw_smplx_object_contacts(
+    viewer,
+    body_pts: np.ndarray,
+    obj_pts: np.ndarray,
+    distances: np.ndarray,
+    threshold: float,
+    max_points: int,
+    offset: np.ndarray,
+) -> None:
+    active = np.where(np.asarray(distances) <= threshold)[0]
+    if active.size == 0:
+        return
+    if max_points > 0 and active.size > max_points:
+        active = active[np.argsort(distances[active])[:max_points]]
+    shift = np.asarray(offset, dtype=np.float64).reshape(3)
+    for idx in active:
+        t = float(np.clip(distances[idx] / max(threshold, 1e-8), 0.0, 1.0))
+        rgba = np.array([1.0, 0.15 + 0.7 * t, 0.10, 0.95], dtype=np.float64)
+        _append_contact_line(
+            viewer.user_scn,
+            np.asarray(body_pts[idx], dtype=np.float64) + shift,
+            np.asarray(obj_pts[idx], dtype=np.float64) + shift,
+            rgba,
+        )
 
 
 def _upload_mesh_verts(viewer, model: mj.MjModel, mesh_id: int, verts: np.ndarray) -> None:
@@ -726,12 +1026,13 @@ def launch_viewer(
     model: mj.MjModel,
     qpos: np.ndarray,
     objects: list[HiphiObject],
-    human_scaled: list[dict],
     fps: float,
-    show_human: bool,
     follow_camera: bool,
     title: str,
     smplx: SmplxOverlay | None = None,
+    contact_pairs: list | None = None,
+    smplx_offset: np.ndarray | None = None,
+    max_vis_contacts: int = 128,
 ) -> None:
     data = mj.MjData(model)
     n_frames = int(qpos.shape[0])
@@ -749,6 +1050,9 @@ def launch_viewer(
         base_id = -1
 
     ident_quat = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
+    offset = np.zeros(3, dtype=np.float64)
+    if smplx_offset is not None:
+        offset = np.asarray(smplx_offset, dtype=np.float64).reshape(3)
     state = {
         "current": 0,
         "playing": True,
@@ -796,10 +1100,15 @@ def launch_viewer(
     print("  Controls: ← → frame   ↑ ↓ ±10   Space play/pause   1-5 speed   "
           "M SMPL-X   R restart   Esc close")
     obj_names = ", ".join(f"{o.object_id}({o.category})" for o in objects) or "(none)"
-    print(f"  Objects: {obj_names}")
+    print(f"  Robot column: optimized robot + objects (XY mocap, Z×thigh)  ({obj_names})")
     if smplx is not None:
-        print(f"  SMPL-X overlay: {smplx.verts.shape[0]} frames, "
-              f"{smplx.verts.shape[1]} verts  (M toggles)")
+        print(
+            f"  SMPL-X column: stretched mesh + unscaled objects (cm→m), "
+            f"offset={offset.tolist()}  ({smplx.verts.shape[1]} verts, M toggles)"
+        )
+        print("  Contact: red SMPL-X→object  |  green robot-thigh→object")
+    elif contact_pairs is not None:
+        print("  Contact overlay: green robot-thigh → object")
 
     with mjv.launch_passive(
         model, data,
@@ -810,7 +1119,7 @@ def launch_viewer(
         viewer.opt.frame = mj.mjtFrame.mjFRAME_NONE
         viewer.cam.elevation = -20
         viewer.cam.azimuth = 135
-        viewer.cam.distance = 3.5
+        viewer.cam.distance = 5.5 if smplx is not None else 3.5
 
         prev = -1
         last_time = time.time()
@@ -828,10 +1137,9 @@ def launch_viewer(
 
             fi = state["current"]
             viewer.opt.geomgroup[2] = 1 if state["smplx"] else 0
+            viewer.opt.geomgroup[3] = 1 if state["smplx"] else 0
             if fi != prev:
                 prev = fi
-                # update_mesh() takes the simulate lock internally. Calling it
-                # inside viewer.lock() deadlocks the UI on the first frame.
                 if smplx is not None and fi < len(smplx.verts):
                     _upload_mesh_verts(viewer, model, smplx.mesh_id, smplx.verts[fi])
                 with viewer.lock():
@@ -841,18 +1149,49 @@ def launch_viewer(
                             continue
                         data.mocap_pos[obj.mocap_id] = obj.pos_zup[fi]
                         data.mocap_quat[obj.mocap_id] = obj.quat_wxyz[fi]
-                    if smplx is not None and fi < len(smplx.anchor):
-                        data.mocap_pos[smplx.mocap_id] = smplx.anchor[fi]
-                        data.mocap_quat[smplx.mocap_id] = ident_quat
+                    if smplx is not None:
+                        if fi < len(smplx.anchor):
+                            data.mocap_pos[smplx.mocap_id] = smplx.anchor[fi] + offset
+                            data.mocap_quat[smplx.mocap_id] = ident_quat
+                        for obj in objects:
+                            if obj.ref_mocap_id < 0:
+                                continue
+                            src = obj.pos_smplx if obj.pos_smplx.size else obj.pos_zup
+                            if fi >= len(src):
+                                continue
+                            data.mocap_pos[obj.ref_mocap_id] = src[fi] + offset
+                            data.mocap_quat[obj.ref_mocap_id] = obj.quat_wxyz[fi]
                     mj.mj_forward(model, data)
 
-                if show_human and fi < len(human_scaled):
-                    _draw_human_overlay(viewer, human_scaled[fi])
-                else:
-                    viewer.user_scn.ngeom = 0
+                viewer.user_scn.ngeom = 0
+                if (
+                    state["smplx"]
+                    and smplx is not None
+                    and smplx.distances is not None
+                    and smplx.object_ids is not None
+                    and smplx.object_points_world is not None
+                    and smplx.body_world is not None
+                    and fi < len(smplx.distances)
+                ):
+                    ids = smplx.object_ids[fi]
+                    _draw_smplx_object_contacts(
+                        viewer,
+                        smplx.body_world[fi],
+                        smplx.object_points_world[fi, ids],
+                        smplx.distances[fi],
+                        smplx.contact_threshold,
+                        max_vis_contacts,
+                        offset,
+                    )
+                if contact_pairs is not None and fi < len(contact_pairs):
+                    robot_pts, obj_pts = contact_pairs[fi]
+                    _draw_robot_contact_pairs(viewer, robot_pts, obj_pts)
 
                 if follow_camera and base_id >= 0:
-                    viewer.cam.lookat[:] = data.xpos[base_id]
+                    lookat = np.asarray(data.xpos[base_id], dtype=np.float64).copy()
+                    if smplx is not None and fi < len(smplx.anchor):
+                        lookat = 0.5 * (lookat + smplx.anchor[fi] + offset)
+                    viewer.cam.lookat[:] = lookat
 
             viewer.sync()
             if not state["playing"]:
@@ -872,7 +1211,7 @@ def _parse_height(value: str):
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Retarget HiPHI motion and view robot + processed SMPL-X + objects in MuJoCo.",
+        description="Retarget HiPHI motion and eval robot vs stretched SMPL-X contact in MuJoCo.",
     )
     p.add_argument("--hiphi-root", type=Path, default=DEFAULT_HIPHI_ROOT,
                    help="Root of HiPHI data (default: datas/hiphi)")
@@ -897,21 +1236,38 @@ def parse_args() -> argparse.Namespace:
                    help="Override IK config bvh_scale (default: from JSON, usually 0.01)")
     p.add_argument("--no-y-up", action="store_true",
                    help="Do not apply BVHParser zxy axis remap to object tracks")
-    p.add_argument("--show-human", action="store_true",
-                   help="Overlay scaled human joint spheres")
     p.add_argument("--smplx-model", type=Path, default=DEFAULT_SMPLX,
                    help="SMPL-X folder or SMPLX_*.pkl (default: assets/smpl-x)")
     p.add_argument("--gender", type=str, default="auto",
                    choices=("auto", "neutral", "female", "male"),
                    help="SMPL-X gender. auto uses clip metadata, then Neutral.")
     p.add_argument("--no-smplx", action="store_true",
-                   help="Do not overlay the processed SMPL-X mesh")
+                   help="Do not show the stretched SMPL-X + object eval column")
+    p.add_argument("--smplx-offset", type=float, nargs=3, default=(2.5, 0.0, 0.0),
+                   metavar=("X", "Y", "Z"),
+                   help="World translation of the SMPL-X+object column (default: 2.5 0 0)")
     p.add_argument("--no-follow-camera", action="store_true",
-                   help="Do not keep the camera on the robot base")
+                   help="Do not keep the camera on the robot / SMPL-X midpoint")
     p.add_argument("--no-viewer", action="store_true",
                    help="Retarget (and optionally save) without opening MuJoCo")
     p.add_argument("--save-pkl", type=Path, default=None,
                    help="Write retargeted qpos + object poses to a pickle")
+    p.add_argument("--object-contact-cost", type=float, default=8.0,
+                   help="Mink cost for thigh–object contact (0 disables)")
+    p.add_argument("--object-contact-threshold", type=float, default=0.10,
+                   help="SMPL-X thigh contact distance threshold in metres")
+    p.add_argument("--object-contact-snap", type=float, default=0.005,
+                   help="Snap SMPL-X–object pairs closer than this to zero offset")
+    p.add_argument("--object-contact-max-points", type=int, default=32,
+                   help="Max active thigh contacts per IK frame")
+    p.add_argument("--object-contact-samples", type=int, default=1024,
+                   help="Object surface samples used for contact queries")
+    p.add_argument("--max-vis-contacts", type=int, default=128,
+                   help="Max SMPL-X↔object contact lines drawn per frame")
+    p.add_argument("--no-object-contact", action="store_true",
+                   help="Do not add the mink object-contact task")
+    p.add_argument("--no-show-contact", action="store_true",
+                   help="Do not draw contact lines in the viewer")
     return p.parse_args()
 
 
@@ -1001,6 +1357,9 @@ def main() -> int:
         print(f"  {obj.object_id}: mesh={obj.mesh_id} ({obj.mesh_path.name})  "
               f"track={obj.track_path}  "
               f"pos0_raw={np.round(obj.pos_zup[0], 3).tolist()}")
+        obj.pos_smplx = np.asarray(obj.pos_zup, dtype=np.float64).copy()
+        obj.mesh_scale_xyz = np.full(3, MESH_SCALE, dtype=np.float64)
+        obj.mesh_scale_smplx = np.full(3, MESH_SCALE, dtype=np.float64)
 
     print("[3/4] Retargeting …")
     robot_key = register_custom_robot(xml_path)
@@ -1014,33 +1373,114 @@ def main() -> int:
         verbose=False,
     )
     sh, sv = hips_object_scales(ik_config, use_height)
-    scale_objects_like_hips(objects, sh, sv)
+    leg_sh, leg_sv = leg_object_scales(ik_config, use_height)
+    s_pos, s_mesh = robot_object_vertical_scale(sv, leg_sv)
     assumed = float(ik_config.get("human_height_assumption", 1.8))
     ratio = use_height / assumed if assumed > 1e-8 else 1.0
-    print(f"  object scale = height_ratio {ratio:.4f} × JSON Hips  "
-          f"horizontal={sh:.4f}  vertical={sv:.4f}")
-    print(f"  mesh local scale (cm→m × Hips): "
-          f"{MESH_SCALE * sh:.5f} {MESH_SCALE * sv:.5f} {MESH_SCALE * sh:.5f}")
-    for obj in objects:
-        print(f"  {obj.object_id} pos0_scaled={np.round(obj.pos_zup[0], 3).tolist()}")
+    root = str(ik_config.get("human_root_name") or "Hips")
+    json_h = float((ik_config.get("human_scale_table_horizontal") or {}).get(root, sh / max(ratio, 1e-8)))
+    json_v = float((ik_config.get("human_scale_table_vertical") or {}).get(root, sv / max(ratio, 1e-8)))
+    print(
+        f"  JSON {root} (GMR Mixamo IK only)  horizontal={json_h:.4f}  "
+        f"vertical={json_v:.4f}  height_ratio={ratio:.4f}  → sh={sh:.4f} sv={sv:.4f}"
+    )
+    print(
+        f"  thigh/leg effective (Z divisor)  "
+        f"sv={leg_sv:.4f}  bones={','.join(LEG_SCALE_BONES)}"
+    )
+    print(
+        f"  SMPL-X objects  pos×[1, 1, 1]  mesh×{MESH_SCALE}  (stretch world)"
+    )
+    print(
+        f"  robot objects   pos×{np.round(s_pos, 4).tolist()}  "
+        f"mesh×{np.round(s_mesh, 5).tolist()}  (XY mocap, Z only)"
+    )
 
-    qpos, human_scaled = retarget_frames(retargeter, human_frames)
+    object_contact = None
+    smplx_vis = None
+    use_object_contact = (
+        not args.no_object_contact
+        and float(args.object_contact_cost) > 0.0
+        and len(objects) > 0
+        and smplx_model.exists()
+    )
+    need_smplx_prep = (
+        len(objects) > 0
+        and smplx_model.exists()
+        and (use_object_contact or (not args.no_viewer and not args.no_smplx))
+    )
+    if need_smplx_prep:
+        print("[3b/4] SMPL-X thigh–object contact (IK reference + eval mesh) …")
+        payload = prepare_thigh_object_contact(
+            human_frames,
+            objects,
+            smplx_model,
+            gender,
+            sh,
+            sv,
+            align_to_head=(args.human_height == "bvh"),
+            use_height=use_height,
+            object_samples=args.object_contact_samples,
+            snap_threshold=args.object_contact_snap,
+            contact_threshold=args.object_contact_threshold,
+        )
+        smplx_vis = payload["vis"]
+        if use_object_contact:
+            object_contact = payload["ik"]
+            retargeter.enable_object_contact(
+                cost=args.object_contact_cost,
+                threshold=args.object_contact_threshold,
+                max_points=args.object_contact_max_points,
+            )
+        else:
+            print("  object-contact IK off; SMPL-X mesh is still shown for eval")
+    elif args.no_object_contact:
+        print("  object contact: off (--no-object-contact)")
+    elif not objects:
+        print("  object contact: off (no objects in clip)")
+    elif float(args.object_contact_cost) <= 0.0:
+        print("  object contact: off (cost=0)")
+
+    s_pos, s_mesh = scale_objects_to_robot(
+        objects, sh, sv, skeleton_sh=leg_sh, skeleton_sv=leg_sv
+    )
+    for obj in objects:
+        print(
+            f"  {obj.object_id} robot pos0={np.round(obj.pos_zup[0], 3).tolist()}  "
+            f"mesh={np.round(obj.mesh_scale_xyz, 5).tolist()}  "
+            f"smplx pos0={np.round(obj.pos_smplx[0], 3).tolist()}"
+        )
+    if object_contact is not None:
+        pts = np.asarray(object_contact["object_points_world"], dtype=np.float64)
+        object_contact["object_points_world"] = pts * s_pos
+
+    qpos, contact_pairs = retarget_frames(
+        retargeter, human_frames, object_contact=object_contact
+    )
     print(f"  qpos {qpos.shape}")
 
     overlay: SmplxOverlay | None = None
     tmp_obj_path: Path | None = None
-    if not args.no_viewer and not args.no_smplx:
-        print("[3b/4] Skinning SMPL-X overlay from pre-GMR BVH …")
-        local_verts, anchor, driver = skin_processed_smplx(
-            human_frames, smplx_model, gender,
-        )
+    if not args.no_viewer and not args.no_smplx and smplx_vis is not None:
         tmp_obj = tempfile.NamedTemporaryFile(
-            prefix="smplx_rest_", suffix=".obj", delete=False,
+            prefix="smplx_eval_", suffix=".obj", delete=False,
         )
         tmp_obj_path = Path(tmp_obj.name)
         tmp_obj.close()
-        write_obj(tmp_obj_path, local_verts[0], driver.faces)
-        overlay = SmplxOverlay(verts=local_verts, anchor=anchor, obj_path=tmp_obj_path)
+        write_obj(tmp_obj_path, smplx_vis["local_verts"][0], smplx_vis["faces"])
+        overlay = SmplxOverlay(
+            verts=smplx_vis["local_verts"],
+            anchor=smplx_vis["anchor"],
+            obj_path=tmp_obj_path,
+            lookat=smplx_vis["lookat"],
+            body_world=None if args.no_show_contact else smplx_vis["body_world"],
+            distances=None if args.no_show_contact else smplx_vis["distances"],
+            object_ids=None if args.no_show_contact else smplx_vis["object_ids"],
+            object_points_world=(
+                None if args.no_show_contact else smplx_vis["object_points_world"]
+            ),
+            contact_threshold=float(smplx_vis["contact_threshold"]),
+        )
 
     if args.save_pkl is not None:
         import pickle
@@ -1053,13 +1493,17 @@ def main() -> int:
             "human_height": use_height,
             "object_scale_horizontal": sh,
             "object_scale_vertical": sv,
+            "leg_scale_horizontal": leg_sh,
+            "leg_scale_vertical": leg_sv,
             "objects": [
                 {
                     "object_id": o.object_id,
                     "category": o.category,
                     "mesh_path": str(o.mesh_path),
                     "mesh_scale_xyz": o.mesh_scale_xyz,
+                    "mesh_scale_smplx": o.mesh_scale_smplx,
                     "pos": o.pos_zup,
+                    "pos_smplx": o.pos_smplx,
                     "quat_wxyz": o.quat_wxyz,
                 }
                 for o in objects
@@ -1084,16 +1528,20 @@ def main() -> int:
         bind_mocap_ids(model, objects)
         if overlay is not None:
             bind_smplx_overlay(model, overlay)
+            bind_ref_mocap_ids(model, objects)
         launch_viewer(
             model=model,
             qpos=qpos,
             objects=objects,
-            human_scaled=human_scaled,
             fps=fps,
-            show_human=args.show_human,
             follow_camera=not args.no_follow_camera,
             title=f"{clip.motion_id} → {xml_path.parent.name}  [{ik_path.name}]",
             smplx=overlay,
+            contact_pairs=None if args.no_show_contact else (
+                contact_pairs if object_contact is not None else None
+            ),
+            smplx_offset=np.asarray(args.smplx_offset, dtype=np.float64),
+            max_vis_contacts=args.max_vis_contacts,
         )
     finally:
         tmp_xml.unlink(missing_ok=True)

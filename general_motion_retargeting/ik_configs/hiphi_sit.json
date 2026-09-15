@@ -141,7 +141,7 @@
         ],
         "aux_base": [
             "Hips",
-            10.0,
+            5.0,
             40.0,
             [
                 0,
@@ -157,7 +157,7 @@
         ],
         "aux_left_ankle_end": [
             "LeftFootMod",
-            40.0,
+            100.0,
             20.0,
             [
                 0,
@@ -205,7 +205,7 @@
         ],
         "aux_left_toe_base": [
             "LeftToeBase",
-            200.0,
+            400.0,
             5.0,
             [
                 0,
@@ -237,7 +237,7 @@
         ],
         "aux_right_ankle_end": [
             "RightFootMod",
-            40.0,
+            100.0,
             20.0,
             [
                 0,
@@ -285,7 +285,7 @@
         ],
         "aux_right_toe_base": [
             "RightToeBase",
-            200.0,
+            400.0,
             5.0,
             [
                 0,

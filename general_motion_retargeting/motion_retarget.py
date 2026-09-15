@@ -5,6 +5,7 @@ import numpy as np
 import json
 from scipy.spatial.transform import Rotation as R
 from .params import ROBOT_XML_DICT, IK_CONFIG_DICT
+from .object_contact_task import ObjectContactTask, sample_robot_thigh_cloud
 from rich import print
 
 
@@ -230,6 +231,7 @@ class GeneralMotionRetargeting:
         self.setup_retarget_configuration()
         
         self.ground_offset = 0.0
+        self.object_contact_task: ObjectContactTask | None = None
 
     def setup_retarget_configuration(self):
         self.configuration = mink.Configuration(self.model)
@@ -280,6 +282,45 @@ class GeneralMotionRetargeting:
         if self.use_frame_joint_damper:
             self.tasks1.append(self.frame_joint_damper_task)
             self.tasks2.append(self.frame_joint_damper_task)
+
+    def enable_object_contact(
+        self,
+        cost: float = 8.0,
+        threshold: float = 0.10,
+        max_points: int = 32,
+        max_match_distance: float = 0.30,
+        samples_per_side: int = 128,
+        seed: int = 0,
+        verbose: bool = True,
+    ) -> dict:
+        """Attach a mink task that copies SMPL-X thigh–object contact onto the robot."""
+        if self.object_contact_task is not None:
+            for bucket in (self.tasks1, self.tasks2):
+                if self.object_contact_task in bucket:
+                    bucket.remove(self.object_contact_task)
+        cloud = sample_robot_thigh_cloud(
+            self.model, samples_per_side=samples_per_side, seed=seed
+        )
+        self.object_contact_task = ObjectContactTask(
+            self.model,
+            cloud["geom_ids"],
+            cloud["local_pos"],
+            cloud["sides"],
+            cost=float(cost),
+            threshold=float(threshold),
+            max_points=int(max_points),
+            max_match_distance=float(max_match_distance),
+        )
+        self.tasks1.append(self.object_contact_task)
+        self.tasks2.append(self.object_contact_task)
+        n_left = int(np.sum(cloud["sides"] == 0))
+        n_right = int(np.sum(cloud["sides"] == 1))
+        if verbose:
+            print(
+                f"[GMR] object-contact task  cost={cost:g}  threshold={threshold:.3f}m  "
+                f"max_points={max_points}  robot_thigh_pts L/R={n_left}/{n_right}"
+            )
+        return cloud
 
     def _build_frame_mappings(
         self, ik_match_table, frame_to_task, frame_to_bodies,
@@ -366,7 +407,7 @@ class GeneralMotionRetargeting:
             self.posture_task.set_target_from_configuration(self.configuration)
             
             
-    def retarget(self, human_data, offset_to_ground=None):
+    def retarget(self, human_data, offset_to_ground=None, object_contact_frame=None):
         # Update the task targets
         if offset_to_ground is None:
             offset_to_ground = self.offset_to_ground
@@ -374,6 +415,9 @@ class GeneralMotionRetargeting:
         frame_start_qpos = self.configuration.data.qpos.copy()
         if self.use_frame_joint_damper:
             self.frame_joint_damper_task.set_target(frame_start_qpos)
+        if self.object_contact_task is not None:
+            # Keep the first pass as joint-frame IK; match contact after the pose exists.
+            self.object_contact_task.clear()
 
         if self.use_ik_match_table1:
             # Solve the IK problem
@@ -403,8 +447,30 @@ class GeneralMotionRetargeting:
                 
                 next_error = self.error2()
                 num_iter += 1
-                
-            
+
+        # After joint IK, rematch thigh slots at the posed robot and refine.
+        if (
+            self.object_contact_task is not None
+            and object_contact_frame is not None
+            and self.object_contact_task.set_from_smpl_frame(
+                self.configuration, object_contact_frame
+            )
+            > 0
+        ):
+            refine_tasks = self.tasks1 if self.use_ik_match_table1 else self.tasks2
+            error_fn = self.error1 if self.use_ik_match_table1 else self.error2
+            curr_error = error_fn()
+            dt = self.configuration.model.opt.timestep
+            self._solve_ik_step(refine_tasks, dt)
+            next_error = error_fn()
+            num_iter = 0
+            while curr_error - next_error > 0.001 and num_iter < self.max_iter:
+                curr_error = next_error
+                dt = self.configuration.model.opt.timestep
+                self._solve_ik_step(refine_tasks, dt)
+                next_error = error_fn()
+                num_iter += 1
+
         return self.configuration.data.qpos.copy()
 
 
