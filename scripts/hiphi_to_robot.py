@@ -15,7 +15,9 @@ SMPL-X↔object stays in the stretch-only world: tracks unscaled, mesh
 ``0.01`` (cm→m). Robot↔object XY follows GMR Hips
 (``root_pos * [sh, sh, sv]`` on X/Y). Size and extra pose come from IK
 JSON ``object_robot`` (``mesh_scale``, ``pos_scale``, ``pos_offset``).
-The robot mesh is never scaled.
+After mesh/pos scale, robot-column objects are lifted so the lowest mesh
+point sits on z=0; ``pos_offset`` is applied last. The robot mesh is never
+scaled.
 
 Eval viewer (side by side):
 - Robot + Hips-XY objects (config size / offset).
@@ -84,6 +86,7 @@ DEFAULT_CORRESPONDENCE = (
     / "correspondence_d20"
     / "correspondence_contact_smplx_neutral_d20.npz"
 )
+DEFAULT_EXPORT_DIR = _PROJECT_ROOT / "data" / "SitChair"
 # Mixamo bones whose GMR scale matches sitting / thigh–object contact.
 LEG_SCALE_BONES = ("LeftUpLeg", "RightUpLeg", "LeftLeg", "RightLeg")
 # Same extras as scripts/bvh_to_smplx_viewer.py (world metres after height scale).
@@ -136,6 +139,7 @@ class HiphiObject:
     mesh_scale_smplx: np.ndarray = field(
         default_factory=lambda: np.full(3, MESH_SCALE, dtype=np.float64)
     )
+    ground_z_lift: float = 0.0
     mocap_id: int = -1
     ref_mocap_id: int = -1
 
@@ -154,14 +158,14 @@ class HiphiClip:
 class ObjectRobotConfig:
     """IK JSON ``object_robot``: robot-column object size and pose tweak.
 
-    World origin after GMR Hips XY::
+    Order::
 
-        pos' = pos * [hips_sh * pos_scale_x, hips_sh * pos_scale_y, pos_scale_z]
-               + pos_offset
-
-    Mesh is authored Y-up centimetres::
-
+        pos_scaled = pos * [hips_sh * pos_scale_x, hips_sh * pos_scale_y, pos_scale_z]
         mesh_scale_xyz = 0.01 * mesh_scale
+        pos_grounded_z = pos_scaled_z + lift   # lowest scaled vertex at world z=0
+        pos' = pos_grounded + pos_offset
+
+    Mesh scale is in the authored OBJ frame (Y-up centimetres, origin = file 0).
     """
 
     mesh_scale: np.ndarray = field(
@@ -452,6 +456,35 @@ def scale_objects_like_hips(objects: list[HiphiObject], sh: float, sv: float) ->
         obj.mesh_scale_xyz = s_mesh.copy()
 
 
+def _load_object_mesh_vertices(mesh_path: Path) -> np.ndarray:
+    import trimesh
+
+    mesh = trimesh.load(mesh_path, process=False, force="mesh")
+    if isinstance(mesh, trimesh.Scene):
+        geoms = [g for g in mesh.dump() if isinstance(g, trimesh.Trimesh)]
+        if not geoms:
+            raise ValueError(f"no triangle mesh in {mesh_path}")
+        mesh = trimesh.util.concatenate(geoms)
+    return np.asarray(mesh.vertices, dtype=np.float64)
+
+
+def object_min_world_z(
+    verts_local: np.ndarray,
+    pos: np.ndarray,
+    quat_wxyz: np.ndarray,
+) -> float:
+    """Lowest world-Z of a posed local mesh over the whole clip."""
+    verts = np.asarray(verts_local, dtype=np.float64).reshape(-1, 3)
+    pos = np.asarray(pos, dtype=np.float64).reshape(-1, 3)
+    quats = np.asarray(quat_wxyz, dtype=np.float64).reshape(-1, 4)
+    n = min(len(pos), len(quats))
+    if n == 0 or len(verts) == 0:
+        return 0.0
+    rots = R.from_quat(quats[:n], scalar_first=True).as_matrix()
+    world_z = np.einsum("fi,vi->fv", rots[:, 2, :], verts) + pos[:n, 2:3]
+    return float(world_z.min())
+
+
 def scale_objects_to_robot(
     objects: list[HiphiObject],
     hips_sh: float,
@@ -459,9 +492,9 @@ def scale_objects_to_robot(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Robot-column objects. SMPL-X copies (``pos_smplx``) stay unscaled.
 
-    World XY follows GMR Hips ``root_pos * [sh, sh, sv]``. ``cfg.pos_scale``
-    and ``cfg.pos_offset`` are extra tweaks. Mesh is ``0.01 * cfg.mesh_scale``
-    in the authored local frame (Y-up).
+    1. Scale origin by Hips XY / ``pos_scale`` and mesh by ``0.01 * mesh_scale``.
+    2. Lift world Z so the lowest posed vertex sits on the ground (z=0).
+    3. Apply ``pos_offset`` last as the final origin tweak.
     """
     s_pos = np.array(
         [
@@ -474,9 +507,16 @@ def scale_objects_to_robot(
     offset = np.asarray(cfg.pos_offset, dtype=np.float64).reshape(3)
     s_mesh = MESH_SCALE * np.asarray(cfg.mesh_scale, dtype=np.float64).reshape(3)
     for obj in objects:
-        if obj.pos_zup.size:
-            obj.pos_zup = obj.pos_zup * s_pos + offset
         obj.mesh_scale_xyz = s_mesh.copy()
+        obj.ground_z_lift = 0.0
+        if not obj.pos_zup.size:
+            continue
+        obj.pos_zup = obj.pos_zup * s_pos
+        verts_local = _load_object_mesh_vertices(obj.mesh_path) * s_mesh
+        min_z = object_min_world_z(verts_local, obj.pos_zup, obj.quat_wxyz)
+        obj.ground_z_lift = -min_z
+        obj.pos_zup[:, 2] += obj.ground_z_lift
+        obj.pos_zup = obj.pos_zup + offset
     return s_pos, offset, s_mesh
 
 
@@ -1354,6 +1394,12 @@ def parse_args() -> argparse.Namespace:
                    help="Retarget (and optionally save) without opening MuJoCo")
     p.add_argument("--save-pkl", type=Path, default=None,
                    help="Write retargeted qpos + object poses to a pickle")
+    p.add_argument("--export-dir", type=Path, default=DEFAULT_EXPORT_DIR,
+                   help="SitChair 50Hz export root (data_000/ …). Default: data/SitChair")
+    p.add_argument("--export-slot", type=int, default=None,
+                   help="Write data/SitChair/data_XXX with this index (overwrites)")
+    p.add_argument("--no-export", action="store_true",
+                   help="Do not write the 50Hz SitChair folder")
     p.add_argument("--object-contact-cost", type=float, default=8.0,
                    help="Mink cost for thigh–object contact (0 disables)")
     p.add_argument("--object-contact-threshold", type=float, default=0.10,
@@ -1552,6 +1598,7 @@ def main() -> int:
                 threshold=args.object_contact_threshold,
                 max_points=args.object_contact_max_points,
             )
+            object_contact["robot_body_names"] = bound["body_names"]
         else:
             print("  object-contact IK off; SMPL-X mesh is still shown for eval")
     elif args.no_object_contact:
@@ -1564,11 +1611,13 @@ def main() -> int:
     s_pos, pos_offset, s_mesh = scale_objects_to_robot(objects, sh, obj_cfg)
     print(
         f"  robot objects   origin×{np.round(s_pos, 4).tolist()}  "
-        f"+ {np.round(pos_offset, 4).tolist()}  mesh×{np.round(s_mesh, 5).tolist()}"
+        f"then ground-z  then +{np.round(pos_offset, 4).tolist()}  "
+        f"mesh×{np.round(s_mesh, 5).tolist()}"
     )
     for obj in objects:
         print(
             f"  {obj.object_id} robot pos0={np.round(obj.pos_zup[0], 3).tolist()}  "
+            f"ground_z_lift={obj.ground_z_lift:+.4f}m  "
             f"mesh={np.round(obj.mesh_scale_xyz, 5).tolist()}  "
             f"smplx pos0={np.round(obj.pos_smplx[0], 3).tolist()}"
         )
@@ -1583,12 +1632,37 @@ def main() -> int:
             )
         else:
             pts = np.asarray(object_contact["object_points_world"], dtype=np.float64)
-            object_contact["object_points_world"] = pts * s_pos + pos_offset
+            z_lift = np.array(
+                [0.0, 0.0, float(objects[0].ground_z_lift) if objects else 0.0],
+                dtype=np.float64,
+            )
+            object_contact["object_points_world"] = pts * s_pos + z_lift + pos_offset
 
     qpos, contact_pairs = retarget_frames(
         retargeter, human_frames, object_contact=object_contact
     )
     print(f"  qpos {qpos.shape}")
+
+    if not args.no_export:
+        from general_motion_retargeting.utils.standard_motion_export import (
+            allocate_clip_dir,
+            export_standard_clip,
+        )
+
+        export_root = args.export_dir.resolve()
+        out_dir = allocate_clip_dir(export_root, args.export_slot)
+        export_standard_clip(
+            out_dir,
+            model=retargeter.model,
+            qpos=qpos,
+            fps_src=float(fps),
+            objects=objects,
+            object_contact=object_contact,
+            # contact_threshold=float(args.object_contact_threshold),
+            contact_threshold=0.02, # args.object_contact_threshold is used for soft contact cost. Hard contact threshold shall be smaller
+            bake_object_pose=True,
+        )
+        print(f"  exported 50Hz SitChair clip → {out_dir}")
 
     overlay: SmplxOverlay | None = None
     tmp_obj_path: Path | None = None

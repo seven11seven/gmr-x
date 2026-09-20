@@ -21,3 +21,8 @@ In our ik config such as `smplx_to_g1.json`, you might find following params. I 
         ],
       ...
 ```
+
+# TODO
+
+1. solve discreate contact objective functions
+2.  
